@@ -101,13 +101,17 @@ class TgUserLinkStore {
 
     /** Remove the mapping for a user. */
     public function unlinkByUser($userId) {
-        if (!$this->tablesReady) { return; }
+        // Must ensureTables() — the in-memory $tablesReady flag is per-request
+        // and starts false even when the table absolutely exists on disk.
+        // A defensive early-return here meant unlink silently no-op'd on
+        // fresh requests, leaving the mapping in place.
+        $this->ensureTables();
         db_query('DELETE FROM ' . $this->tableLinks . ' WHERE user_id=' . (int) $userId);
     }
 
     /** Remove the mapping for a chat (used by /unlink command). */
     public function unlinkByChat($chatId) {
-        if (!$this->tablesReady) { return; }
+        $this->ensureTables();
         db_query('DELETE FROM ' . $this->tableLinks . ' WHERE chat_id=' . (int) $chatId);
     }
 
@@ -200,13 +204,15 @@ class TgUserLinkStore {
     }
 
     public function unlinkStaffByChat($chatId) {
-        if (!$this->staffTablesReady) { return; }
+        // See unlinkByUser() — must ensure tables exist; the in-memory flag
+        // starts false per-request and would silently skip the DELETE.
+        $this->ensureStaffTables();
         db_query('DELETE FROM ' . $this->tableStaffLinks
             . ' WHERE chat_id=' . (int) $chatId);
     }
 
     public function unlinkStaffById($staffId) {
-        if (!$this->staffTablesReady) { return; }
+        $this->ensureStaffTables();
         db_query('DELETE FROM ' . $this->tableStaffLinks
             . ' WHERE staff_id=' . (int) $staffId);
     }
