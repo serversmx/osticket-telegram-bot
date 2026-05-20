@@ -129,7 +129,14 @@ $maskChat = function ($id) {
 /* Theme-agnostic CSS: semi-transparent backgrounds + `color: inherit` so the */
 /* page looks right against any theme (light, dark, custom branded). All */
 /* selectors prefixed with .tg-page to avoid clashing with osTicket. */
-.tg-page { width: 100%; font-family: inherit; color: inherit; }
+/* Explicit system font stack — `inherit` was falling back to browser default */
+/* serif when osTicket didn't set font-family on the parent container. */
+.tg-page {
+    width: 100%;
+    color: inherit;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Helvetica Neue", Arial, sans-serif;
+    line-height: 1.5;
+}
 .tg-page h2.tg-title { font-size: 1.5em; margin: 0 0 6px; font-weight: 600; color: inherit; }
 .tg-page .tg-subtitle { opacity: 0.7; margin: 0 0 24px; font-size: 0.95em; }
 .tg-card {
