@@ -1,0 +1,74 @@
+<?php
+/**
+ * Landing page for osTicket's staff "Applications" tab.
+ *
+ * osTicket sets the Applications tab's default href to `apps.php` (see
+ * include/class.nav.php). Clicking the tab text directly (instead of
+ * hovering and picking a submenu item) navigates to this URL. osTicket
+ * does NOT ship this file by default — clicking the tab text gives a 404.
+ *
+ * Drop this file at <osticket>/scp/apps.php to convert that 404 into a
+ * useful index of every plugin-registered staff app:
+ *
+ *   cp plugin/scp-apps-landing.php.example /path/to/osticket/scp/apps.php
+ *
+ * The file is intentionally NOT Telegram-specific — it iterates whatever
+ * apps any installed plugin has registered via
+ * `Application::registerStaffApp()`. Use it once and benefit from any
+ * plugin that hooks the same extension point.
+ *
+ * @license GPL-2.0-or-later
+ */
+
+require_once 'staff.inc.php';
+
+if (!class_exists('Application')) {
+    require_once INCLUDE_DIR . 'class.app.php';
+}
+
+$apps = Application::getStaffApps();
+
+if ($nav) {
+    $nav->setTabActive('apps');
+}
+
+require_once STAFFINC_DIR . 'header.inc.php';
+?>
+
+<h2><i class="icon-cogs"></i> <?php echo __('Applications'); ?></h2>
+<div class="clear"></div>
+
+<?php if (!$apps): ?>
+  <div class="tip_box" style="padding:16px 18px;background:#fffbeb;border-left:4px solid #f59e0b;border-radius:6px;margin-top:16px;">
+    <p style="margin:0;">
+      <?php echo __('No plugin-registered applications are available right now.'); ?>
+    </p>
+  </div>
+<?php else: ?>
+  <div class="row" style="margin-top:16px;">
+    <div class="span12">
+      <ul class="apps-list" style="list-style:none;padding:0;margin:0;">
+      <?php foreach ($apps as $app):
+          $desc  = isset($app['desc']) ? (string) $app['desc'] : '';
+          $href  = isset($app['href']) ? (string) $app['href'] : '#';
+          $title = isset($app['title']) ? (string) $app['title'] : $desc;
+      ?>
+        <li style="padding:14px 18px;background:#f8fafc;border-left:4px solid #2563eb;border-radius:6px;margin-bottom:10px;">
+          <a href="<?php echo Format::htmlchars($href); ?>"
+             style="font-size:1.1em;font-weight:600;text-decoration:none;color:#1e293b;">
+            <?php echo Format::htmlchars($desc); ?>
+          </a>
+          <?php if ($title && $title !== $desc): ?>
+            <div style="color:#64748b;margin-top:4px;font-size:0.95em;">
+              <?php echo Format::htmlchars($title); ?>
+            </div>
+          <?php endif; ?>
+        </li>
+      <?php endforeach; ?>
+      </ul>
+    </div>
+  </div>
+<?php endif; ?>
+
+<?php
+require_once STAFFINC_DIR . 'footer.inc.php';

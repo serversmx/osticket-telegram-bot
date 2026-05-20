@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-05-20
+
+### Added
+- **`plugin/scp-apps-landing.php.example`** — a generic landing page for the staff "Applications" tab. osTicket sets the Applications tab's default `href` to `apps.php` (see `include/class.nav.php`), but the file is **not** shipped with osTicket. Clicking the tab text (instead of hovering for the dropdown) gives a 404. This file fills that gap by listing every plugin-registered staff app from `Application::getStaffApps()`. Not Telegram-specific — drop it once and any plugin's apps appear there.
+
+### Install
+
+```bash
+cp /path/to/osticket/include/plugins/telegram-bot/scp-apps-landing.php.example \
+   /path/to/osticket/scp/apps.php
+chown <web-user>:<web-group> /path/to/osticket/scp/apps.php
+chmod 644 /path/to/osticket/scp/apps.php
+```
+
+After that, both entry points work:
+
+- **Hover Applications → Telegram** → goes to `/scp/link-telegram.php` (direct).
+- **Click Applications tab** → goes to `/scp/apps.php` → lists Telegram (+ any other registered app) → click to open.
+
 ## [0.1.7] - 2026-05-20
 
 ### Added
@@ -104,7 +123,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - All log levels go through `EvoLogRedactor` — chat_ids partially masked, message bodies truncated with length prefix, secrets replaced with `[REDACTED]`.
 - `SECURITY.md` documents threat model, webhook trust boundary, accepted risks, and responsible-disclosure channel.
 
-[Unreleased]: https://github.com/RenatoAscencio/osticket-telegram-bot/compare/v0.1.7...HEAD
+[Unreleased]: https://github.com/RenatoAscencio/osticket-telegram-bot/compare/v0.1.8...HEAD
+[0.1.8]: https://github.com/RenatoAscencio/osticket-telegram-bot/releases/tag/v0.1.8
 [0.1.7]: https://github.com/RenatoAscencio/osticket-telegram-bot/releases/tag/v0.1.7
 [0.1.6]: https://github.com/RenatoAscencio/osticket-telegram-bot/releases/tag/v0.1.6
 [0.1.5]: https://github.com/RenatoAscencio/osticket-telegram-bot/releases/tag/v0.1.5
