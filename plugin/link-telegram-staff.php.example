@@ -126,49 +126,87 @@ $maskChat = function ($id) {
 ?>
 
 <style>
-.tg-page { max-width: 880px; margin: 0 auto; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-.tg-page h2 { font-size: 1.6em; margin: 0 0 6px; color: #0f172a; font-weight: 600; }
-.tg-page .tg-subtitle { color: #64748b; margin: 0 0 28px; font-size: 0.98em; }
-.tg-card { background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 24px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
-.tg-card-linked { border-left: 4px solid #16a34a; background: linear-gradient(to right, #f0fdf4, #fff 40%); }
-.tg-card-unlinked { border-left: 4px solid #2563eb; background: linear-gradient(to right, #eff6ff, #fff 40%); }
-.tg-status-row { display: flex; align-items: center; gap: 14px; margin-bottom: 18px; flex-wrap: wrap; }
-.tg-status-badge { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 999px; font-weight: 600; font-size: 0.85em; }
-.tg-status-linked { background: #dcfce7; color: #166534; }
-.tg-status-unlinked { background: #dbeafe; color: #1e40af; }
-.tg-meta-row { display: flex; flex-wrap: wrap; gap: 10px 28px; padding: 14px 16px; background: #f8fafc; border-radius: 8px; margin: 14px 0; }
+/* Theme-agnostic CSS: semi-transparent backgrounds + `color: inherit` so the */
+/* page looks right against any theme (light, dark, custom branded). All */
+/* selectors prefixed with .tg-page to avoid clashing with osTicket. */
+.tg-page { width: 100%; font-family: inherit; color: inherit; }
+.tg-page h2.tg-title { font-size: 1.5em; margin: 0 0 6px; font-weight: 600; color: inherit; }
+.tg-page .tg-subtitle { opacity: 0.7; margin: 0 0 24px; font-size: 0.95em; }
+.tg-card {
+    background: rgba(127, 127, 127, 0.06);
+    border: 1px solid rgba(127, 127, 127, 0.2);
+    border-radius: 12px;
+    padding: 22px; margin-bottom: 18px;
+}
+.tg-card-linked { border-left: 4px solid #16a34a; }
+.tg-card-unlinked { border-left: 4px solid #2563eb; }
+.tg-status-row { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; flex-wrap: wrap; }
+.tg-status-badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 12px; border-radius: 999px;
+    font-weight: 600; font-size: 0.85em;
+}
+.tg-status-linked { background: rgba(22, 163, 74, 0.15); color: #16a34a; }
+.tg-status-unlinked { background: rgba(37, 99, 235, 0.15); color: #2563eb; }
+.tg-meta-row {
+    display: flex; flex-wrap: wrap; gap: 10px 28px;
+    padding: 14px 16px;
+    background: rgba(127, 127, 127, 0.08);
+    border-radius: 8px; margin: 14px 0;
+}
 .tg-meta-item { display: flex; flex-direction: column; min-width: 140px; }
-.tg-meta-label { color: #64748b; font-size: 0.78em; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 2px; }
-.tg-meta-value { color: #0f172a; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.95em; }
+.tg-meta-label { opacity: 0.6; font-size: 0.78em; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 2px; }
+.tg-meta-value { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.95em; color: inherit; }
 .tg-meta-value a { color: #2563eb; text-decoration: none; }
 .tg-meta-value a:hover { text-decoration: underline; }
 .tg-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 18px; }
-.tg-btn { display: inline-flex; align-items: center; gap: 8px; padding: 10px 18px; border-radius: 8px; border: none; cursor: pointer; font-weight: 600; text-decoration: none; font-size: 0.95em; transition: transform 0.05s, box-shadow 0.15s; }
-.tg-btn:hover { box-shadow: 0 2px 6px rgba(0,0,0,0.1); }
+.tg-btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 10px 18px; border-radius: 8px; border: none;
+    cursor: pointer; font-weight: 600; font-size: 0.95em;
+    text-decoration: none !important;
+    transition: transform 0.05s, box-shadow 0.15s, background 0.15s;
+}
+.tg-btn:hover { box-shadow: 0 2px 6px rgba(0,0,0,0.15); }
 .tg-btn:active { transform: translateY(1px); }
-.tg-btn-primary { background: #2563eb; color: #fff; }
-.tg-btn-primary:hover { background: #1d4ed8; color: #fff; }
-.tg-btn-danger { background: #fff; color: #dc2626; border: 1px solid #fca5a5; }
-.tg-btn-danger:hover { background: #fef2f2; }
+.tg-btn-primary { background: #2563eb; color: #fff !important; }
+.tg-btn-primary:hover { background: #1d4ed8; color: #fff !important; }
+.tg-btn-danger {
+    background: transparent; color: #dc2626 !important;
+    border: 1px solid rgba(220, 38, 38, 0.4);
+}
+.tg-btn-danger:hover { background: rgba(220, 38, 38, 0.08); }
 .tg-btn-large { padding: 14px 26px; font-size: 1.05em; }
 .tg-steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin: 18px 0; }
-.tg-step { background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 16px; text-align: center; position: relative; }
-.tg-step-num { position: absolute; top: -12px; left: 50%; transform: translateX(-50%); background: #2563eb; color: #fff; width: 26px; height: 26px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 0.85em; }
+.tg-step {
+    background: rgba(127, 127, 127, 0.06);
+    border: 1px solid rgba(127, 127, 127, 0.2);
+    border-radius: 10px;
+    padding: 16px 12px 12px; text-align: center; position: relative;
+}
+.tg-step-num {
+    position: absolute; top: -12px; left: 50%; transform: translateX(-50%);
+    background: #2563eb; color: #fff;
+    width: 26px; height: 26px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 0.85em;
+}
 .tg-step-icon { font-size: 1.6em; margin: 8px 0 6px; }
-.tg-step-text { color: #475569; font-size: 0.88em; line-height: 1.4; }
+.tg-step-text { opacity: 0.8; font-size: 0.88em; line-height: 1.4; color: inherit; }
 .tg-info-list { margin: 14px 0 0 0; padding: 0; list-style: none; }
-.tg-info-list li { padding: 8px 0; color: #475569; display: flex; align-items: start; gap: 10px; }
+.tg-info-list li { padding: 6px 0; opacity: 0.85; display: flex; align-items: start; gap: 10px; }
 .tg-info-list li:before { content: "✓"; color: #16a34a; font-weight: 700; flex-shrink: 0; }
 .tg-flash { padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-size: 0.95em; }
-.tg-flash-ok { background: #dcfce7; color: #166534; border: 1px solid #86efac; }
-.tg-flash-err { background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; }
+.tg-flash-ok { background: rgba(22, 163, 74, 0.15); color: #16a34a; border: 1px solid rgba(22, 163, 74, 0.3); }
+.tg-flash-err { background: rgba(220, 38, 38, 0.12); color: #dc2626; border: 1px solid rgba(220, 38, 38, 0.3); }
+.tg-divider { margin-top: 18px; padding-top: 16px; border-top: 1px solid rgba(127, 127, 127, 0.2); opacity: 0.7; font-size: 0.88em; }
 @media (max-width: 640px) {
     .tg-steps { grid-template-columns: 1fr; }
 }
 </style>
 
 <div class="tg-page">
-    <h2>📲 Notificaciones por Telegram</h2>
+    <h2 class="tg-title">📲 Notificaciones por Telegram</h2>
     <p class="tg-subtitle">Recibe alertas de tickets directamente en tu Telegram. Sin contraseñas, sin chat IDs — un clic y listo.</p>
 
     <?php if (!empty($okMsg)): ?>
@@ -183,10 +221,10 @@ $maskChat = function ($id) {
             <div class="tg-status-row">
                 <div style="font-size: 2.2em; line-height: 1;">✅</div>
                 <div style="flex: 1; min-width: 200px;">
-                    <div style="font-size: 1.15em; font-weight: 600; color: #0f172a;">
+                    <div style="font-size: 1.15em; font-weight: 600;">
                         Cuenta vinculada
                     </div>
-                    <div style="color: #475569; font-size: 0.92em; margin-top: 2px;">
+                    <div style="opacity: 0.7; font-size: 0.92em; margin-top: 2px;">
                         Estás recibiendo notificaciones admin en este chat.
                     </div>
                 </div>
@@ -230,7 +268,7 @@ $maskChat = function ($id) {
         </div>
 
         <div class="tg-card">
-            <div style="font-weight: 600; color: #0f172a; margin-bottom: 12px;">Qué recibes en tu Telegram</div>
+            <div style="font-weight: 600; margin-bottom: 12px;">Qué recibes en tu Telegram</div>
             <ul class="tg-info-list">
                 <li>Nuevos tickets creados por clientes</li>
                 <li>Respuestas de clientes en tickets existentes</li>
@@ -244,10 +282,10 @@ $maskChat = function ($id) {
             <div class="tg-status-row">
                 <div style="font-size: 2.2em; line-height: 1;">📱</div>
                 <div style="flex: 1; min-width: 200px;">
-                    <div style="font-size: 1.15em; font-weight: 600; color: #0f172a;">
+                    <div style="font-size: 1.15em; font-weight: 600;">
                         Aún no has vinculado tu Telegram
                     </div>
-                    <div style="color: #475569; font-size: 0.92em; margin-top: 2px;">
+                    <div style="opacity: 0.7; font-size: 0.92em; margin-top: 2px;">
                         Toma menos de 30 segundos.
                     </div>
                 </div>
@@ -281,13 +319,13 @@ $maskChat = function ($id) {
                 </form>
             </div>
 
-            <div style="margin-top: 18px; padding-top: 18px; border-top: 1px solid #e2e8f0; color: #64748b; font-size: 0.88em;">
-                <strong style="color: #475569;">¿Privacidad?</strong> El bot solo te envía mensajes; no lee tus chats. Si decides desvincular después, simplemente vuelve aquí.
+            <div class="tg-divider">
+                <strong>¿Privacidad?</strong> El bot solo te envía mensajes; no lee tus chats. Si decides desvincular después, simplemente vuelve aquí.
             </div>
         </div>
 
         <div class="tg-card">
-            <div style="font-weight: 600; color: #0f172a; margin-bottom: 12px;">Qué vas a recibir</div>
+            <div style="font-weight: 600; margin-bottom: 12px;">Qué vas a recibir</div>
             <ul class="tg-info-list">
                 <li>Nuevos tickets creados por clientes</li>
                 <li>Respuestas de clientes en tickets existentes</li>

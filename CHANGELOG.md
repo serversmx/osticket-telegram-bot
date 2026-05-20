@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Theme-agnostic CSS** for both staff pages (`link-telegram.php`, `apps.php`). Previously they hard-coded light-theme colors (`#fff`, `#0f172a`, `#64748b`, etc.) and a 880–980px `max-width` container, which looked off on custom-branded themes (e.g. the green one currently active on tickets.tvplus.mx). Now:
+  - `width: 100%` instead of fixed `max-width` — content fills whatever container osTicket's active theme provides.
+  - Backgrounds use `rgba(127, 127, 127, 0.06)` style — semi-transparent grays that adapt to any base color.
+  - Text uses `color: inherit` and `opacity` for hierarchy instead of fixed grays.
+  - Accent colors (blue `#2563eb`, green `#16a34a`, red `#dc2626`) kept but used with `rgba(.., 0.15)` backgrounds so they blend across themes.
+  - Status badges and step cards use transparent fills, so dark mode / custom themes render correctly without changes.
+
 ## [0.1.10] - 2026-05-20
 
 ### Changed
