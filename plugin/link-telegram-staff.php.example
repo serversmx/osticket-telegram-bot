@@ -66,9 +66,13 @@ $validTabs = array('link');
 if ($isAdmin) {
     $validTabs = array('link', 'notif', 'templates', 'format');
 }
-$tab = isset($_GET['tab']) ? (string) $_GET['tab'] : 'link';
-if (!in_array($tab, $validTabs, true)) {
-    $tab = 'link';
+// NOTE: do NOT name this `$tab` — osTicket's navigation.tmpl.php iterates
+// `foreach ($tabs as $name => $tab)` inside header.inc.php, which clobbers
+// any `$tab` in the calling scope. We read GET['tab'] but store as
+// `$activeTab` so post-header references survive.
+$activeTab = isset($_GET['tab']) ? (string) $_GET['tab'] : 'link';
+if (!in_array($activeTab, $validTabs, true)) {
+    $activeTab = 'link';
 }
 
 /**
@@ -327,11 +331,11 @@ $botUsername = (string) $pluginCfg->get('bot_username');
     <p class="tg-subtitle">Notificaciones de tickets por Telegram. Vincula tu chat, configura eventos, plantillas y formato.</p>
 
     <ul class="tg-tabs">
-        <li class="<?php echo $tab === 'link' ? 'active' : ''; ?>"><a href="?tab=link">🔗 Mi vinculación</a></li>
+        <li class="<?php echo $activeTab === 'link' ? 'active' : ''; ?>"><a href="?tab=link">🔗 Mi vinculación</a></li>
         <?php if ($isAdmin): ?>
-            <li class="<?php echo $tab === 'notif' ? 'active' : ''; ?>"><a href="?tab=notif">🔔 Notificaciones</a></li>
-            <li class="<?php echo $tab === 'templates' ? 'active' : ''; ?>"><a href="?tab=templates">📝 Plantillas</a></li>
-            <li class="<?php echo $tab === 'format' ? 'active' : ''; ?>"><a href="?tab=format">🎨 Formato</a></li>
+            <li class="<?php echo $activeTab === 'notif' ? 'active' : ''; ?>"><a href="?tab=notif">🔔 Notificaciones</a></li>
+            <li class="<?php echo $activeTab === 'templates' ? 'active' : ''; ?>"><a href="?tab=templates">📝 Plantillas</a></li>
+            <li class="<?php echo $activeTab === 'format' ? 'active' : ''; ?>"><a href="?tab=format">🎨 Formato</a></li>
         <?php endif; ?>
     </ul>
 
@@ -343,7 +347,7 @@ $botUsername = (string) $pluginCfg->get('bot_username');
     <?php endif; ?>
 
     <?php // ═════════════════ TAB 1: Mi vinculación ═════════════════ ?>
-    <?php if ($tab === 'link'): ?>
+    <?php if ($activeTab === 'link'): ?>
         <?php if ($linkedChatId): ?>
             <div class="tg-card tg-card-linked">
                 <div class="tg-status-row">
@@ -436,7 +440,7 @@ $botUsername = (string) $pluginCfg->get('bot_username');
     <?php endif; ?>
 
     <?php // ═════════════════ TAB 2: Notificaciones (admin) ═════════════════ ?>
-    <?php if ($tab === 'notif' && $isAdmin):
+    <?php if ($activeTab === 'notif' && $isAdmin):
         $g = function ($k, $d = '') use ($namespace) { return tg_read($namespace, $k, $d); };
         $on = function ($k, $d = '0') use ($g) { return $g($k, $d) === '1'; };
         $events = array(
@@ -506,7 +510,7 @@ $botUsername = (string) $pluginCfg->get('bot_username');
     <?php endif; ?>
 
     <?php // ═════════════════ TAB 3: Plantillas (admin) ═════════════════ ?>
-    <?php if ($tab === 'templates' && $isAdmin):
+    <?php if ($activeTab === 'templates' && $isAdmin):
         $g = function ($k, $d = '') use ($namespace, $pluginCfg) {
             $v = tg_read($namespace, $k, '__NONE__');
             return $v === '__NONE__' ? (string) $pluginCfg->get($k) : $v;
@@ -564,7 +568,7 @@ $botUsername = (string) $pluginCfg->get('bot_username');
     <?php endif; ?>
 
     <?php // ═════════════════ TAB 4: Formato (admin) ═════════════════ ?>
-    <?php if ($tab === 'format' && $isAdmin):
+    <?php if ($activeTab === 'format' && $isAdmin):
         $g = function ($k, $d = '') use ($namespace, $pluginCfg) {
             $v = tg_read($namespace, $k, '__NONE__');
             return $v === '__NONE__' ? (string) $pluginCfg->get($k) : $v;
