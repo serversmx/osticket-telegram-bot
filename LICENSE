@@ -1,0 +1,18 @@
+GNU GENERAL PUBLIC LICENSE
+Version 2, June 1991
+
+Copyright (C) 1989, 1991 Free Software Foundation, Inc.
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
+
+Everyone is permitted to copy and distribute verbatim copies of this license
+document, but changing it is not allowed.
+
+This osTicket Telegram Bot Notifications plugin is licensed under the GNU
+General Public License v2.0 to be compatible with osTicket itself
+(https://github.com/osTicket/osTicket) and the official osTicket plugins
+repository (https://github.com/osTicket/osTicket-plugins), enabling a future
+upstream contribution.
+
+Full license text: https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt
+
+SPDX-License-Identifier: GPL-2.0-or-later

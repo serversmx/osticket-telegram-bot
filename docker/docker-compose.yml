@@ -1,0 +1,48 @@
+name: osticket-telegram-bot-dev
+
+services:
+  db:
+    image: mariadb:10.11
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: rootpw
+      MARIADB_DATABASE: osticket
+      MARIADB_USER: osticket
+      MARIADB_PASSWORD: osticket
+    volumes:
+      - osticket_db:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  osticket:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8082:80"
+    environment:
+      OSTICKET_DB_HOST: db
+      OSTICKET_DB_NAME: osticket
+      OSTICKET_DB_USER: osticket
+      OSTICKET_DB_PASSWORD: osticket
+      OSTICKET_DB_PREFIX: ost_
+    volumes:
+      # Live-mount the plugin so edits show up inside the container.
+      - ../plugin:/var/www/html/include/plugins/telegram-bot:ro
+      - osticket_attachments:/var/www/html/attachments
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost/"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  osticket_db:
+  osticket_attachments:

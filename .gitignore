@@ -1,0 +1,51 @@
+# osTicket Telegram Bot Plugin
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# PHP / Composer
+vendor/
+composer.lock
+.phpunit.result.cache
+.phpunit.cache/
+
+# Build artifacts
+build/
+dist/
+*.phar.gz
+*.tar.gz
+
+# Local environment
+.env
+.env.local
+.env.*.local
+scripts/.env
+scripts/.env.local
+scripts/.env.*
+!scripts/.env.example
+docker/data/
+docker/.osticket-installed
+
+# Logs
+*.log
+logs/
+
+# OS / runtime
+node_modules/
+
+# Project-specific: secrets that must never be committed
+plugin/config.local.php
+**/credentials.json
+**/bot-token.txt
+
+# Local deployment notes specific to a particular install
+deploy.local.md
+*.local.md
+
+# Local Claude Code tooling (agents, commands, settings) — server-specific
+.claude/

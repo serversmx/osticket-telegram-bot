@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: PHP ${{ matrix.php }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['7.4', '8.1', '8.3']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: curl, json, mbstring
+
+      - name: Syntax check (php -l)
+        run: |
+          set -e
+          for f in plugin/plugin.php plugin/config.php plugin/telegram.php plugin/webhook.php plugin/lib/*.php; do
+            php -l "$f"
+          done
+
+      - name: Unit tests
+        run: |
+          set -e
+          php tests/TelegramFormatterTest.php
+          php tests/InlineKeyboardBuilderTest.php
+          php tests/SentryReporterTest.php
+          php tests/LogRedactorTest.php
+          php tests/LogRedactorTelegramKeysTest.php
+
+  docker-build:
+    name: Docker build smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build osTicket image
+        run: docker build -f docker/Dockerfile docker
