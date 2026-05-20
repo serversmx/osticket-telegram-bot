@@ -93,6 +93,51 @@ class TelegramBotNotificationsPlugin extends Plugin {
         if ($this->anyOn('evt_status_changed__client', 'evt_status_changed__admin', 'evt_assignment_changed__admin')) {
             Signal::connect('model.updated', array($this, 'onModelUpdated'));
         }
+
+        // Register a "Telegram" entry in the staff "Applications" dropdown.
+        // This is osTicket's plugin-native extension point for adding staff
+        // nav items (Application::registerStaffApp → nav.php picks it up).
+        // Survives osTicket upgrades with zero core-file edits.
+        $this->registerStaffNav();
+    }
+
+    /**
+     * Add a "Telegram" link to the staff Applications dropdown so staff
+     * have a discoverable entry point. Points at scp/link-telegram.php
+     * (the staff-facing manage page).
+     *
+     * If link-telegram.php isn't deployed to scp/, the menu item still
+     * appears but clicks 404 — admins should deploy it as part of plugin
+     * install (see docs/user-linking.md).
+     */
+    private function registerStaffNav() {
+        // osTicket only requires class.app.php from class.nav.php at render
+        // time, which is too late for us. Load it now so Application is
+        // available — it's safe to require_once even if it's loaded later.
+        if (!class_exists('Application')
+            && defined('INCLUDE_DIR')
+            && is_file(INCLUDE_DIR . 'class.app.php')) {
+            require_once INCLUDE_DIR . 'class.app.php';
+        }
+        if (!class_exists('Application')) {
+            return;
+        }
+        try {
+            // registerStaffApp is declared without `static` in osTicket but
+            // mutates a static property. Under PHP 8.x calling it statically
+            // throws — instantiate Application and call on the instance.
+            $app = new Application();
+            $app->registerStaffApp(
+                'Telegram',
+                'link-telegram.php',
+                array(
+                    'title'     => 'Notificaciones por Telegram',
+                    'iconclass' => 'comment',
+                )
+            );
+        } catch (Exception $e) {
+            // Non-critical — silent.
+        }
     }
 
     // ─── Public API for webhook handler ──────────────────────────────────

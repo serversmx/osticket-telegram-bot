@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-05-20
+
+### Added
+- **Staff Applications-menu entry** via `Application::registerStaffApp()` — osTicket's plugin-native extension point for staff navigation. The plugin's `bootstrap()` now registers a "Telegram" item that appears under the staff "Applications" dropdown in the top nav, pointing at `scp/link-telegram.php`. **No core file modification, survives osTicket upgrades.**
+- The "Applications" tab itself materializes in the staff nav as soon as at least one plugin registers an app (osTicket only shows the tab when `getStaffApps()` is non-empty).
+
+### Notes
+- `class.app.php` is normally required lazily by `class.nav.php` at render time, which is too late for plugins. `registerStaffNav()` requires it explicitly first.
+- PHP 8.x compatibility: `Application::registerStaffApp()` is declared without `static` but mutates a static property, so calling it statically throws under PHP 8.x. We instantiate (`new Application()`) and call on the instance — the underlying static property still ends up populated.
+- The `scripts/apply-staff-profile-patch.sh` script from v0.1.6 is now **optional** — only run it if you also want a visible button block at the top of the staff profile page in addition to the Applications-menu entry. Most installs will be happy with just the menu entry.
+
 ## [0.1.6] - 2026-05-20
 
 ### Added
@@ -93,7 +104,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - All log levels go through `EvoLogRedactor` — chat_ids partially masked, message bodies truncated with length prefix, secrets replaced with `[REDACTED]`.
 - `SECURITY.md` documents threat model, webhook trust boundary, accepted risks, and responsible-disclosure channel.
 
-[Unreleased]: https://github.com/RenatoAscencio/osticket-telegram-bot/compare/v0.1.6...HEAD
+[Unreleased]: https://github.com/RenatoAscencio/osticket-telegram-bot/compare/v0.1.7...HEAD
+[0.1.7]: https://github.com/RenatoAscencio/osticket-telegram-bot/releases/tag/v0.1.7
 [0.1.6]: https://github.com/RenatoAscencio/osticket-telegram-bot/releases/tag/v0.1.6
 [0.1.5]: https://github.com/RenatoAscencio/osticket-telegram-bot/releases/tag/v0.1.5
 [0.1.4]: https://github.com/RenatoAscencio/osticket-telegram-bot/releases/tag/v0.1.4
