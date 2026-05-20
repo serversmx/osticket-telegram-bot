@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-05-20
+
+### Added
+- **Staff (admin) account linking** — parallel flow to the customer linking added in v0.1.4. Each staff member can self-enroll into the admin notification recipient list with a single click + Start in Telegram, instead of an admin having to copy their numeric chat_id into the `admin_chat_ids` config field.
+  - New tables (auto-created on first use): `<prefix>telegram_staff_links` (staff_id ↔ chat_id) and `<prefix>telegram_staff_link_tokens` (one-shot tokens with the same TTL as customer tokens).
+  - New plugin method `generateStaffLinkUrl($staffId)` mints a staff-scoped token and returns the t.me deep link.
+  - `handleStart()` now tries `consumeToken()` first (customer table), then falls back to `consumeStaffToken()` — tokens are in separate tables so each resolves unambiguously.
+  - `sendToAdmins()` merges the manual `admin_chat_ids` config list with `allStaffChatIds()` from the links store (deduplicated). Staff members who link via the new flow start receiving admin notifications immediately, no config edit required.
+  - `/unlink` and `/status` now check both user and staff tables and report accurately.
+- **`plugin/link-telegram-staff.php.example`** — staff-facing redirect intended for the `scp/` directory. Authenticates via `staff.inc.php`, calls `generateStaffLinkUrl($thisstaff->getId())`, redirects to t.me. Same one-click UX as the customer version.
+
+### Internal
+- `UserLinkStore` gained the parallel staff API: `issueStaffToken`, `consumeStaffToken`, `linkStaff`, `unlinkStaffByChat`, `unlinkStaffById`, `chatIdForStaff`, `staffIdForChat`, `allStaffChatIds`. `pruneExpiredTokens` now prunes both token tables.
+
 ## [0.1.4] - 2026-05-20
 
 ### Added
@@ -72,7 +86,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - All log levels go through `EvoLogRedactor` — chat_ids partially masked, message bodies truncated with length prefix, secrets replaced with `[REDACTED]`.
 - `SECURITY.md` documents threat model, webhook trust boundary, accepted risks, and responsible-disclosure channel.
 
-[Unreleased]: https://github.com/RenatoAscencio/osticket-telegram-bot/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/RenatoAscencio/osticket-telegram-bot/compare/v0.1.5...HEAD
+[0.1.5]: https://github.com/RenatoAscencio/osticket-telegram-bot/releases/tag/v0.1.5
 [0.1.4]: https://github.com/RenatoAscencio/osticket-telegram-bot/releases/tag/v0.1.4
 [0.1.3]: https://github.com/RenatoAscencio/osticket-telegram-bot/releases/tag/v0.1.3
 [0.1.2]: https://github.com/RenatoAscencio/osticket-telegram-bot/releases/tag/v0.1.2

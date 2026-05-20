@@ -171,7 +171,8 @@ class TelegramBotNotificationsPlugin extends Plugin {
 
     /**
      * Generate a /start linking token + return the t.me deep-link URL.
-     * Called from the staff UI / user profile flow.
+     * For customer (end-user) linking. See generateStaffLinkUrl for the
+     * admin/staff variant.
      */
     public function generateLinkUrl($userId) {
         $cfg = $this->cfg();
@@ -180,6 +181,21 @@ class TelegramBotNotificationsPlugin extends Plugin {
             return null;
         }
         $token = $this->links()->issueToken((int) $userId);
+        return 'https://t.me/' . rawurlencode($bot) . '?start=' . rawurlencode($token);
+    }
+
+    /**
+     * Same as generateLinkUrl, but binds the token to a Staff record so
+     * that after /start the staff member's chat_id gets added to the
+     * admin notification recipient list (see sendToAdmins).
+     */
+    public function generateStaffLinkUrl($staffId) {
+        $cfg = $this->cfg();
+        $bot = trim((string) $cfg->get('bot_username'));
+        if ($bot === '') {
+            return null;
+        }
+        $token = $this->links()->issueStaffToken((int) $staffId);
         return 'https://t.me/' . rawurlencode($bot) . '?start=' . rawurlencode($token);
     }
 
@@ -305,6 +321,7 @@ class TelegramBotNotificationsPlugin extends Plugin {
 
     private function sendToAdmins($template, array $vars, $keyboardMarkup = null) {
         $cfg = $this->cfg();
+        // Source 1: manual list from config (one per line).
         $raw = (string) $cfg->get('admin_chat_ids');
         $list = array();
         foreach (preg_split('/\r?\n/', $raw) as $line) {
@@ -313,8 +330,21 @@ class TelegramBotNotificationsPlugin extends Plugin {
                 $list[] = $line;
             }
         }
+        // Source 2: chat_ids linked to Staff records via /start. Lets a staff
+        // member join the admin recipient list with a single click instead of
+        // an admin editing the config.
+        try {
+            foreach ($this->links()->allStaffChatIds() as $cid) {
+                $list[] = (string) $cid;
+            }
+        } catch (Exception $e) {
+            $this->log('warning', 'allStaffChatIds failed', array('exception' => $e->getMessage()));
+        }
+        // Dedupe while preserving order.
+        $list = array_values(array_unique($list));
+
         if (!$list) {
-            $this->log('debug', 'notify_admins is on but no admin chat IDs configured');
+            $this->log('debug', 'notify_admins is on but no admin chat IDs configured or linked');
             return;
         }
 
@@ -365,34 +395,57 @@ class TelegramBotNotificationsPlugin extends Plugin {
             return;
         }
 
+        // Try user token first, then staff token. Tokens live in separate
+        // tables — a given token will resolve to exactly one of the two.
         $userId = $this->links()->consumeToken($arg);
-        if ($userId === null) {
-            $this->reply($chatId, 'Linking token is invalid or expired. Please request a new one from your osTicket profile.');
+        if ($userId !== null) {
+            $this->links()->link($userId, $chatId);
+            $this->log('info', 'Linked user', array('user_id' => $userId, 'chat_id' => $chatId));
+            $this->reply($chatId, '✅ Your Telegram is now linked to your osTicket account. You\'ll receive ticket updates here. Use /unlink to disconnect.');
             return;
         }
-        $this->links()->link($userId, $chatId);
-        $this->log('info', 'Linked user', array('user_id' => $userId, 'chat_id' => $chatId));
-        $this->reply($chatId, '✅ Your Telegram is now linked to your osTicket account. You\'ll receive ticket updates here. Use /unlink to disconnect.');
+
+        $staffId = $this->links()->consumeStaffToken($arg);
+        if ($staffId !== null) {
+            $this->links()->linkStaff($staffId, $chatId);
+            $this->log('info', 'Linked staff', array('staff_id' => $staffId, 'chat_id' => $chatId));
+            $this->reply($chatId, '✅ Your Telegram is now linked to your osTicket admin account. You\'ll receive admin notifications here. Use /unlink to disconnect.');
+            return;
+        }
+
+        $this->reply($chatId, 'Linking token is invalid or expired. Please request a new one from your osTicket profile.');
     }
 
     private function handleUnlink($chatId) {
-        $userId = $this->links()->userIdForChat($chatId);
-        if ($userId === null) {
+        $userId  = $this->links()->userIdForChat($chatId);
+        $staffId = $this->links()->staffIdForChat($chatId);
+
+        if ($userId === null && $staffId === null) {
             $this->reply($chatId, 'This chat is not linked to any osTicket account.');
             return;
         }
-        $this->links()->unlinkByChat($chatId);
-        $this->log('info', 'Unlinked user', array('user_id' => $userId, 'chat_id' => $chatId));
-        $this->reply($chatId, '🔌 Unlinked. You will no longer receive ticket updates here.');
+        if ($userId !== null) {
+            $this->links()->unlinkByChat($chatId);
+            $this->log('info', 'Unlinked user', array('user_id' => $userId, 'chat_id' => $chatId));
+        }
+        if ($staffId !== null) {
+            $this->links()->unlinkStaffByChat($chatId);
+            $this->log('info', 'Unlinked staff', array('staff_id' => $staffId, 'chat_id' => $chatId));
+        }
+        $this->reply($chatId, '🔌 Unlinked. You will no longer receive notifications here.');
     }
 
     private function handleStatus($chatId) {
-        $userId = $this->links()->userIdForChat($chatId);
-        if ($userId === null) {
+        $userId  = $this->links()->userIdForChat($chatId);
+        $staffId = $this->links()->staffIdForChat($chatId);
+        $parts = array();
+        if ($userId !== null)  { $parts[] = 'osTicket user #'  . $userId; }
+        if ($staffId !== null) { $parts[] = 'osTicket staff #' . $staffId; }
+        if (!$parts) {
             $this->reply($chatId, 'This chat is not linked.');
             return;
         }
-        $this->reply($chatId, 'Linked to osTicket user #' . $userId . '.');
+        $this->reply($chatId, 'Linked to: ' . implode(' + ', $parts) . '.');
     }
 
     private function reply($chatId, $text) {
