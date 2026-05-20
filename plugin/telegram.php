@@ -28,11 +28,53 @@ class TelegramBotNotificationsPlugin extends Plugin {
     private $sentry;
     /** @var array<string,bool> per-(ticket,kind) request dedup */
     private $sentInRequest = array();
+    /**
+     * Cached config bound at bootstrap time. PluginManager::bootstrap()
+     * clears `$plugin->config = null` after each plugin's instances finish
+     * bootstrapping, so any later call to `$this->cfg()` (from a
+     * signal handler) would otherwise return an empty default-namespaced
+     * config. We snapshot the live config here while it's still bound and
+     * use it from every handler via `$this->cfg()`.
+     *
+     * @var PluginConfig|null
+     */
+    private $cachedCfg;
+
+    /**
+     * Return the instance-bound PluginConfig. Side-loads the first active
+     * instance on first call if needed, then caches. Safe to call from any
+     * point in the request lifecycle.
+     */
+    private function cfg() {
+        if ($this->cachedCfg) {
+            return $this->cachedCfg;
+        }
+        // Try the parent's live config first (set if we're inside our own bootstrap).
+        // Call parent::getConfig() (NOT $this->getConfig()) to avoid any
+        // chance of recursion if subclasses override getConfig().
+        $live = parent::getConfig();
+        if ($live && $live->get('bot_token')) {
+            $this->cachedCfg = $live;
+            return $live;
+        }
+        // Fall back: side-load the active instance config explicitly.
+        // PluginManager::bootstrap() clears $plugin->config = null after
+        // running each plugin's instance bootstraps, so by signal-handler
+        // time we have to re-fetch via the active instance.
+        if (method_exists($this, 'getActiveInstances')) {
+            foreach ($this->getActiveInstances() as $inst) {
+                $this->cachedCfg = parent::getConfig($inst);
+                return $this->cachedCfg;
+            }
+        }
+        $this->cachedCfg = $live;
+        return $this->cachedCfg;
+    }
 
     // ─── Lifecycle ───────────────────────────────────────────────────────
 
     function bootstrap() {
-        $cfg = $this->getConfig();
+        $cfg = $this->cfg();
 
         $this->sentry = new TgSentryReporter($cfg->get('sentry_dsn'));
         $this->sentry->setEnvironment($cfg->get('sentry_environment') ?: 'production');
@@ -111,7 +153,7 @@ class TelegramBotNotificationsPlugin extends Plugin {
      * Configure (or update) the bot's webhook. Returns the result envelope.
      */
     public function applyWebhookFromConfig() {
-        $cfg = $this->getConfig();
+        $cfg = $this->cfg();
         $url = trim((string) $cfg->get('webhook_public_url'));
         if ($url === '') {
             return array('ok' => false, 'error' => 'webhook_public_url not configured');
@@ -132,7 +174,7 @@ class TelegramBotNotificationsPlugin extends Plugin {
      * Called from the staff UI / user profile flow.
      */
     public function generateLinkUrl($userId) {
-        $cfg = $this->getConfig();
+        $cfg = $this->cfg();
         $bot = trim((string) $cfg->get('bot_username'));
         if ($bot === '') {
             return null;
@@ -144,7 +186,7 @@ class TelegramBotNotificationsPlugin extends Plugin {
     // ─── Signal handlers ─────────────────────────────────────────────────
 
     function onTicketCreated($ticket) {
-        $cfg = $this->getConfig();
+        $cfg = $this->cfg();
         try {
             $vars = $this->ticketVars($ticket);
             $vars['message'] = $this->firstMessage($ticket);
@@ -161,7 +203,7 @@ class TelegramBotNotificationsPlugin extends Plugin {
     }
 
     function onThreadEntryCreated($entry) {
-        $cfg = $this->getConfig();
+        $cfg = $this->cfg();
         try {
             $thread = method_exists($entry, 'getThread') ? $entry->getThread() : null;
             if (!$thread) { return; }
@@ -202,7 +244,7 @@ class TelegramBotNotificationsPlugin extends Plugin {
 
     function onModelUpdated($model) {
         if (!($model instanceof Ticket)) { return; }
-        $cfg = $this->getConfig();
+        $cfg = $this->cfg();
         $tid = $model->getId();
         try {
             $dirty = method_exists($model, 'dirty') ? $model->dirty : array();
@@ -238,7 +280,7 @@ class TelegramBotNotificationsPlugin extends Plugin {
     // ─── Senders ─────────────────────────────────────────────────────────
 
     private function sendToClient(Ticket $ticket, $template, array $vars, $forAdmin = false) {
-        $cfg = $this->getConfig();
+        $cfg = $this->cfg();
 
         // Honor opt-in.
         if ($cfg->get('respect_user_opt_in')) {
@@ -262,7 +304,7 @@ class TelegramBotNotificationsPlugin extends Plugin {
     }
 
     private function sendToAdmins($template, array $vars, $keyboardMarkup = null) {
-        $cfg = $this->getConfig();
+        $cfg = $this->cfg();
         $raw = (string) $cfg->get('admin_chat_ids');
         $list = array();
         foreach (preg_split('/\r?\n/', $raw) as $line) {
@@ -289,7 +331,7 @@ class TelegramBotNotificationsPlugin extends Plugin {
     }
 
     private function dispatchSend($chatId, $text, $keyboardMarkup = null) {
-        $cfg = $this->getConfig();
+        $cfg = $this->cfg();
         $opts = array();
         $pm = $cfg->get('parse_mode');
         if ($pm) { $opts['parse_mode'] = $pm; }
@@ -375,7 +417,7 @@ class TelegramBotNotificationsPlugin extends Plugin {
 
     private function api() {
         if ($this->api !== null) { return $this->api; }
-        $cfg = $this->getConfig();
+        $cfg = $this->cfg();
         $client = new TelegramBotClient(
             $cfg->get('bot_token'),
             $cfg->get('bot_api_base_url') ?: null
@@ -393,7 +435,7 @@ class TelegramBotNotificationsPlugin extends Plugin {
 
     private function links() {
         if ($this->links === null) {
-            $ttl = max(60, (int) ($this->getConfig()->get('link_token_ttl') ?: 900));
+            $ttl = max(60, (int) ($this->cfg()->get('link_token_ttl') ?: 900));
             $this->links = new TgUserLinkStore($ttl);
         }
         return $this->links;
@@ -402,7 +444,7 @@ class TelegramBotNotificationsPlugin extends Plugin {
     // ─── Decision helpers ────────────────────────────────────────────────
 
     private function anyOn(/* ...keys */) {
-        $cfg = $this->getConfig();
+        $cfg = $this->cfg();
         foreach (func_get_args() as $k) {
             if ($cfg->get($k)) { return true; }
         }
@@ -410,12 +452,12 @@ class TelegramBotNotificationsPlugin extends Plugin {
     }
 
     private function clientShouldFire($eventKey) {
-        $cfg = $this->getConfig();
+        $cfg = $this->cfg();
         return $cfg->get('notify_clients') && $cfg->get($eventKey . '__client');
     }
 
     private function adminShouldFire($eventKey) {
-        $cfg = $this->getConfig();
+        $cfg = $this->cfg();
         return $cfg->get('notify_admins') && $cfg->get($eventKey . '__admin');
     }
 
@@ -429,7 +471,7 @@ class TelegramBotNotificationsPlugin extends Plugin {
     // ─── Resolve client chat_id ──────────────────────────────────────────
 
     private function resolveClientChatId(Ticket $ticket) {
-        $cfg = $this->getConfig();
+        $cfg = $this->cfg();
         try {
             $owner = method_exists($ticket, 'getOwner') ? $ticket->getOwner() : null;
             if (!$owner) { return null; }
@@ -460,7 +502,7 @@ class TelegramBotNotificationsPlugin extends Plugin {
     // ─── Opt-in (mirrors Evolution plugin) ───────────────────────────────
 
     private function userOptedIn(Ticket $ticket) {
-        $cfg = $this->getConfig();
+        $cfg = $this->cfg();
         $variable = trim((string) $cfg->get('opt_in_field_variable'));
         if ($variable === '') { $variable = 'telegram_opt_in'; }
         $defaultWhenAbsent = (bool) $cfg->get('opt_in_default_when_absent');
@@ -607,7 +649,7 @@ class TelegramBotNotificationsPlugin extends Plugin {
      * gets auto-escaped.
      */
     private function escapeVarsForParseMode(array $vars) {
-        $mode = $this->getConfig()->get('parse_mode');
+        $mode = $this->cfg()->get('parse_mode');
         if ($mode === 'MarkdownV2') {
             foreach ($vars as $k => $v) {
                 if ($k === 'ticket_link') {
@@ -645,7 +687,7 @@ class TelegramBotNotificationsPlugin extends Plugin {
     }
 
     private function ticketLink(Ticket $ticket) {
-        $base = trim((string) $this->getConfig()->get('base_url'));
+        $base = trim((string) $this->cfg()->get('base_url'));
         if ($base === '') { return ''; }
         return rtrim($base, '/') . '/scp/tickets.php?id=' . (int) $ticket->getId();
     }
@@ -657,7 +699,7 @@ class TelegramBotNotificationsPlugin extends Plugin {
             $entries = $thread->getEntries();
             if (!$entries) { return ''; }
             $first = $entries[0];
-            $mode = $this->getConfig()->get('parse_mode');
+            $mode = $this->cfg()->get('parse_mode');
             return TgFormatter::truncate($this->bodyToText($first->getBody(), $mode), 2500);
         } catch (Exception $e) {
             return '';
@@ -699,7 +741,7 @@ class TelegramBotNotificationsPlugin extends Plugin {
      * For admins: "View ticket" + optional "Reply".
      */
     private function buildKeyboard(Ticket $ticket, $forAdmin) {
-        $cfg = $this->getConfig();
+        $cfg = $this->cfg();
         $base = trim((string) $cfg->get('base_url'));
         if ($base === '') {
             return null;
@@ -755,7 +797,7 @@ class TelegramBotNotificationsPlugin extends Plugin {
     }
 
     public function log($level, $msg, $ctx = array()) {
-        $cfg = $this->getConfig();
+        $cfg = $this->cfg();
         $debug = (bool) $cfg->get('debug_mode');
         if (!$debug && !in_array($level, array('error', 'warning'), true)) {
             return;

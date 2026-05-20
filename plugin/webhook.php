@@ -61,7 +61,23 @@ if (!$plugin || !($plugin instanceof TelegramBotNotificationsPlugin)) {
     exit;
 }
 
-$cfg = $plugin->getConfig();
+// Side-load the active instance config. PluginManager::bootstrap() clears
+// $plugin->config = null after running each plugin's instance bootstrap,
+// so $plugin->getConfig() (without arg) here would return an empty
+// default-namespaced config. We need to re-bind via an active instance.
+$activeInstance = null;
+if (method_exists($plugin, 'getActiveInstances')) {
+    foreach ($plugin->getActiveInstances() as $inst) {
+        $activeInstance = $inst;
+        break;
+    }
+}
+if (!$activeInstance) {
+    http_response_code(500);
+    error_log('[TelegramBot/webhook] Plugin has no active instance.');
+    exit;
+}
+$cfg = $plugin->getConfig($activeInstance);
 
 // 3. Verify the secret token. If the admin didn't set one, accept anyway
 // (but warn in the log — strongly recommended to set one).

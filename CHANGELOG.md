@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-05-20
+
+### Fixed
+- **Signal handlers were reading an empty config.** `PluginManager::bootstrap()` clears `$plugin->config = null` after running each plugin's instance bootstrap, so any later `$this->getConfig()` call (from a signal handler or `processUpdate`) returned a default-namespaced empty config — bot would silently fail to read its own token, chat IDs, templates, etc. Added a `cachedCfg` snapshot taken via a new `cfg()` helper that side-loads from `getActiveInstances()` the first time it's called and survives the clear. All 23 internal `$this->getConfig()` callsites now go through `cfg()`.
+- **`webhook.php` had the same bug**, plus it was not binding the config to a specific instance at all. Now explicitly looks up the first active `PluginInstance` and calls `$plugin->getConfig($instance)` to side-load before checking the `X-Telegram-Bot-Api-Secret-Token` header. Without this, the webhook accepted any request regardless of the configured secret. Returns 500 with a logged hint if no active instance exists.
+
+### Internal
+- `parent::getConfig()` is now used inside `cfg()` to avoid recursion if subclasses ever override `getConfig`.
+
 ## [0.1.2] - 2026-05-19
 
 ### Fixed
@@ -49,7 +58,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - All log levels go through `EvoLogRedactor` — chat_ids partially masked, message bodies truncated with length prefix, secrets replaced with `[REDACTED]`.
 - `SECURITY.md` documents threat model, webhook trust boundary, accepted risks, and responsible-disclosure channel.
 
-[Unreleased]: https://github.com/RenatoAscencio/osticket-telegram-bot/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/RenatoAscencio/osticket-telegram-bot/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/RenatoAscencio/osticket-telegram-bot/releases/tag/v0.1.3
 [0.1.2]: https://github.com/RenatoAscencio/osticket-telegram-bot/releases/tag/v0.1.2
 [0.1.1]: https://github.com/RenatoAscencio/osticket-telegram-bot/releases/tag/v0.1.1
 [0.1.0]: https://github.com/RenatoAscencio/osticket-telegram-bot/releases/tag/v0.1.0
