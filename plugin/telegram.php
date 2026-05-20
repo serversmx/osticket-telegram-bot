@@ -41,6 +41,80 @@ class TelegramBotNotificationsPlugin extends Plugin {
     private $cachedCfg;
 
     /**
+     * Defaults for "preference" settings that no longer live in the plugin
+     * admin form (moved to /scp/link-telegram.php → Notificaciones, Plantillas,
+     * Formato, Vinculación tabs). These return when the corresponding row is
+     * missing from ostt4_config so a fresh install still has working
+     * notifications before the admin opens the staff page once.
+     *
+     * Keys mirror exactly what link-telegram.php saves.
+     */
+    private static function prefDefaults() {
+        return array(
+            // Recipients
+            'notify_clients'                => '1',
+            'notify_admins'                 => '1',
+            'admin_chat_ids'                => '',
+            // Linking / opt-in
+            'allow_deeplink_linking'        => '1',
+            'allow_manual_chat_id'          => '1',
+            'manual_chat_id_field_variable' => 'telegram_chat_id',
+            'respect_user_opt_in'           => '1',
+            'opt_in_field_variable'         => 'telegram_opt_in',
+            'opt_in_default_when_absent'    => '1',
+            'link_token_ttl'                => '900',
+            // Event matrix
+            'evt_ticket_created__client'    => '1',
+            'evt_ticket_created__admin'     => '1',
+            'evt_user_reply__admin'         => '1',
+            'evt_staff_reply__client'       => '1',
+            'evt_staff_reply__admin'        => '0',
+            'evt_status_changed__client'    => '1',
+            'evt_status_changed__admin'     => '0',
+            'evt_assignment_changed__admin' => '0',
+            // Formatting + buttons
+            'parse_mode'                    => 'HTML',
+            'disable_web_page_preview'      => '1',
+            'disable_notification'          => '0',
+            'btn_view_ticket'               => '1',
+            'btn_view_ticket_label'         => '🎟 View ticket',
+            'btn_reply'                     => '1',
+            'btn_reply_label'               => '💬 Reply',
+            'send_delay_ms'                 => '0',
+            'base_url'                      => '',
+            // Templates
+            'tpl_client_created'     => "Hello <b>{{name}}</b>, we received your ticket <b>#{{ticket_number}}</b>\n<i>{{subject}}</i>\n\nAn agent will get back to you shortly.",
+            'tpl_client_staff_reply' => "Hello <b>{{name}}</b>, there's a new reply on ticket <b>#{{ticket_number}}</b>:\n\n{{message}}",
+            'tpl_client_status'      => "Ticket <b>#{{ticket_number}}</b> status changed to <b>{{status}}</b>.",
+            'tpl_admin_created'      => "<b>New ticket #{{ticket_number}}</b>\n<b>Subject:</b> {{subject}}\n<b>From:</b> {{name}} ({{email}})\n<b>Department:</b> {{department}}\n<b>Priority:</b> {{priority}}\n\n{{message}}",
+            'tpl_admin_user_reply'   => "<b>Reply on ticket #{{ticket_number}}</b>\n<b>From customer:</b> {{name}}\n\n{{message}}",
+            'tpl_admin_staff_reply'  => "<b>Staff reply on ticket #{{ticket_number}}</b>\n<b>By:</b> {{name}}\n\n{{message}}",
+            'tpl_admin_status'       => "Ticket <b>#{{ticket_number}}</b> → <b>{{status}}</b> (assignee: {{assignee|—}})",
+            'tpl_admin_assignment'   => "Ticket <b>#{{ticket_number}}</b> assigned to <b>{{assignee}}</b>.",
+        );
+    }
+
+    /**
+     * Read a preference setting with a fallback to prefDefaults() when the
+     * underlying config row is missing. Use this for everything that lives
+     * in link-telegram.php (notif/templates/format/linking tabs). The plugin
+     * admin form fields (bot creds, webhook, Sentry, debug) still use
+     * `$this->cfg()->get(...)` directly — they're guaranteed to be set
+     * because PluginConfig seeds their defaults on first save.
+     */
+    private function pref($key) {
+        $cfg = $this->cfg();
+        if ($cfg) {
+            $v = $cfg->get($key);
+            if ($v !== null && $v !== '') {
+                return $v;
+            }
+        }
+        $d = self::prefDefaults();
+        return array_key_exists($key, $d) ? $d[$key] : null;
+    }
+
+    /**
      * Return the instance-bound PluginConfig. Side-loads the first active
      * instance on first call if needed, then caches. Safe to call from any
      * point in the request lifecycle.
@@ -247,16 +321,15 @@ class TelegramBotNotificationsPlugin extends Plugin {
     // ─── Signal handlers ─────────────────────────────────────────────────
 
     function onTicketCreated($ticket) {
-        $cfg = $this->cfg();
         try {
             $vars = $this->ticketVars($ticket);
             $vars['message'] = $this->firstMessage($ticket);
 
             if ($this->clientShouldFire('evt_ticket_created')) {
-                $this->sendToClient($ticket, $cfg->get('tpl_client_created'), $vars, /*adminKb*/ false);
+                $this->sendToClient($ticket, $this->pref('tpl_client_created'), $vars, /*adminKb*/ false);
             }
             if ($this->adminShouldFire('evt_ticket_created')) {
-                $this->sendToAdmins($cfg->get('tpl_admin_created'), $vars, $this->buildKeyboard($ticket, true));
+                $this->sendToAdmins($this->pref('tpl_admin_created'), $vars, $this->buildKeyboard($ticket, true));
             }
         } catch (Exception $e) {
             $this->report($e, array('event' => 'ticket.created'));
@@ -264,7 +337,6 @@ class TelegramBotNotificationsPlugin extends Plugin {
     }
 
     function onThreadEntryCreated($entry) {
-        $cfg = $this->cfg();
         try {
             $thread = method_exists($entry, 'getThread') ? $entry->getThread() : null;
             if (!$thread) { return; }
@@ -278,24 +350,24 @@ class TelegramBotNotificationsPlugin extends Plugin {
             $vars = $this->ticketVars($ticket);
             $vars['poster_type'] = ucfirst($posterType);
             $vars['name']        = $this->posterName($entry, $vars['name']);
-            $body = TgFormatter::truncate($this->bodyToText($entry->getBody(), $cfg->get('parse_mode')), 2500);
+            $body = TgFormatter::truncate($this->bodyToText($entry->getBody(), $this->pref('parse_mode')), 2500);
             $vars['message'] = $body;
 
             if ($isStaff) {
                 if ($this->clientShouldFire('evt_staff_reply')) {
-                    $this->sendToClient($ticket, $cfg->get('tpl_client_staff_reply'), $vars, false);
+                    $this->sendToClient($ticket, $this->pref('tpl_client_staff_reply'), $vars, false);
                 }
                 if ($this->adminShouldFire('evt_staff_reply')) {
-                    $tpl = $cfg->get('tpl_admin_staff_reply');
+                    $tpl = $this->pref('tpl_admin_staff_reply');
                     if ($tpl === null || $tpl === '') {
-                        $tpl = $cfg->get('tpl_admin_user_reply');
+                        $tpl = $this->pref('tpl_admin_user_reply');
                     }
                     $this->sendToAdmins($tpl, $vars, $this->buildKeyboard($ticket, true));
                 }
             }
             if ($isUser) {
                 if ($this->adminShouldFire('evt_user_reply')) {
-                    $this->sendToAdmins($cfg->get('tpl_admin_user_reply'), $vars, $this->buildKeyboard($ticket, true));
+                    $this->sendToAdmins($this->pref('tpl_admin_user_reply'), $vars, $this->buildKeyboard($ticket, true));
                 }
             }
         } catch (Exception $e) {
@@ -305,7 +377,6 @@ class TelegramBotNotificationsPlugin extends Plugin {
 
     function onModelUpdated($model) {
         if (!($model instanceof Ticket)) { return; }
-        $cfg = $this->cfg();
         $tid = $model->getId();
         try {
             $dirty = method_exists($model, 'dirty') ? $model->dirty : array();
@@ -322,15 +393,15 @@ class TelegramBotNotificationsPlugin extends Plugin {
 
             if ($statusChanged) {
                 if ($this->clientShouldFire('evt_status_changed')) {
-                    $this->sendToClient($model, $cfg->get('tpl_client_status'), $vars, false);
+                    $this->sendToClient($model, $this->pref('tpl_client_status'), $vars, false);
                 }
                 if ($this->adminShouldFire('evt_status_changed')) {
-                    $this->sendToAdmins($cfg->get('tpl_admin_status'), $vars, $this->buildKeyboard($model, true));
+                    $this->sendToAdmins($this->pref('tpl_admin_status'), $vars, $this->buildKeyboard($model, true));
                 }
             }
             if ($assigneeChanged) {
                 if ($this->adminShouldFire('evt_assignment_changed')) {
-                    $this->sendToAdmins($cfg->get('tpl_admin_assignment'), $vars, $this->buildKeyboard($model, true));
+                    $this->sendToAdmins($this->pref('tpl_admin_assignment'), $vars, $this->buildKeyboard($model, true));
                 }
             }
         } catch (Exception $e) {
@@ -341,10 +412,8 @@ class TelegramBotNotificationsPlugin extends Plugin {
     // ─── Senders ─────────────────────────────────────────────────────────
 
     private function sendToClient(Ticket $ticket, $template, array $vars, $forAdmin = false) {
-        $cfg = $this->cfg();
-
         // Honor opt-in.
-        if ($cfg->get('respect_user_opt_in')) {
+        if ($this->pref('respect_user_opt_in')) {
             $optIn = $this->userOptedIn($ticket);
             if ($optIn === false) {
                 $this->log('info', 'Customer opted out — skipping ticket #' . $vars['ticket_number']);
@@ -365,9 +434,8 @@ class TelegramBotNotificationsPlugin extends Plugin {
     }
 
     private function sendToAdmins($template, array $vars, $keyboardMarkup = null) {
-        $cfg = $this->cfg();
-        // Source 1: manual list from config (one per line).
-        $raw = (string) $cfg->get('admin_chat_ids');
+        // Source 1: manual list from preferences (one per line).
+        $raw = (string) $this->pref('admin_chat_ids');
         $list = array();
         foreach (preg_split('/\r?\n/', $raw) as $line) {
             $line = trim($line);
@@ -396,7 +464,7 @@ class TelegramBotNotificationsPlugin extends Plugin {
         $text = TgFormatter::render($template, $this->escapeVarsForParseMode($vars));
         $text = TgFormatter::truncate($text, 3500);
 
-        $delayMs = max(0, (int) $cfg->get('send_delay_ms'));
+        $delayMs = max(0, (int) $this->pref('send_delay_ms'));
         foreach ($list as $i => $chatId) {
             if ($i > 0 && $delayMs > 0) {
                 usleep($delayMs * 1000);
@@ -406,13 +474,12 @@ class TelegramBotNotificationsPlugin extends Plugin {
     }
 
     private function dispatchSend($chatId, $text, $keyboardMarkup = null) {
-        $cfg = $this->cfg();
         $opts = array();
-        $pm = $cfg->get('parse_mode');
+        $pm = $this->pref('parse_mode');
         if ($pm) { $opts['parse_mode'] = $pm; }
-        if ($cfg->get('disable_web_page_preview')) { $opts['disable_web_page_preview'] = true; }
-        if ($cfg->get('disable_notification'))     { $opts['disable_notification'] = true; }
-        if (is_array($keyboardMarkup))             { $opts['reply_markup'] = $keyboardMarkup; }
+        if ($this->pref('disable_web_page_preview')) { $opts['disable_web_page_preview'] = true; }
+        if ($this->pref('disable_notification'))     { $opts['disable_notification'] = true; }
+        if (is_array($keyboardMarkup))               { $opts['reply_markup'] = $keyboardMarkup; }
 
         $res = $this->api()->sendMessage($chatId, $text, $opts);
         if (!$res['ok']) {
@@ -533,7 +600,7 @@ class TelegramBotNotificationsPlugin extends Plugin {
 
     private function links() {
         if ($this->links === null) {
-            $ttl = max(60, (int) ($this->cfg()->get('link_token_ttl') ?: 900));
+            $ttl = max(60, (int) ($this->pref('link_token_ttl') ?: 900));
             $this->links = new TgUserLinkStore($ttl);
         }
         return $this->links;
@@ -542,21 +609,18 @@ class TelegramBotNotificationsPlugin extends Plugin {
     // ─── Decision helpers ────────────────────────────────────────────────
 
     private function anyOn(/* ...keys */) {
-        $cfg = $this->cfg();
         foreach (func_get_args() as $k) {
-            if ($cfg->get($k)) { return true; }
+            if ($this->pref($k)) { return true; }
         }
         return false;
     }
 
     private function clientShouldFire($eventKey) {
-        $cfg = $this->cfg();
-        return $cfg->get('notify_clients') && $cfg->get($eventKey . '__client');
+        return $this->pref('notify_clients') && $this->pref($eventKey . '__client');
     }
 
     private function adminShouldFire($eventKey) {
-        $cfg = $this->cfg();
-        return $cfg->get('notify_admins') && $cfg->get($eventKey . '__admin');
+        return $this->pref('notify_admins') && $this->pref($eventKey . '__admin');
     }
 
     private function markOnce($ticketId, $kind) {
@@ -569,20 +633,19 @@ class TelegramBotNotificationsPlugin extends Plugin {
     // ─── Resolve client chat_id ──────────────────────────────────────────
 
     private function resolveClientChatId(Ticket $ticket) {
-        $cfg = $this->cfg();
         try {
             $owner = method_exists($ticket, 'getOwner') ? $ticket->getOwner() : null;
             if (!$owner) { return null; }
             $userId = method_exists($owner, 'getId') ? (int) $owner->getId() : 0;
 
             // Strategy 1: deep-link store.
-            if ($cfg->get('allow_deeplink_linking') && $userId) {
+            if ($this->pref('allow_deeplink_linking') && $userId) {
                 $chat = $this->links()->chatIdForUser($userId);
                 if ($chat) { return $chat; }
             }
             // Strategy 2: manual field on user profile.
-            if ($cfg->get('allow_manual_chat_id')) {
-                $var = trim((string) $cfg->get('manual_chat_id_field_variable'));
+            if ($this->pref('allow_manual_chat_id')) {
+                $var = trim((string) $this->pref('manual_chat_id_field_variable'));
                 if ($var !== '') {
                     $v = $this->readUserCustomField($owner, $var);
                     if ($v !== null && $v !== '' && !is_array($v)) {
@@ -600,10 +663,9 @@ class TelegramBotNotificationsPlugin extends Plugin {
     // ─── Opt-in (mirrors Evolution plugin) ───────────────────────────────
 
     private function userOptedIn(Ticket $ticket) {
-        $cfg = $this->cfg();
-        $variable = trim((string) $cfg->get('opt_in_field_variable'));
+        $variable = trim((string) $this->pref('opt_in_field_variable'));
         if ($variable === '') { $variable = 'telegram_opt_in'; }
-        $defaultWhenAbsent = (bool) $cfg->get('opt_in_default_when_absent');
+        $defaultWhenAbsent = (bool) $this->pref('opt_in_default_when_absent');
 
         try {
             $owner = method_exists($ticket, 'getOwner') ? $ticket->getOwner() : null;
@@ -747,7 +809,7 @@ class TelegramBotNotificationsPlugin extends Plugin {
      * gets auto-escaped.
      */
     private function escapeVarsForParseMode(array $vars) {
-        $mode = $this->cfg()->get('parse_mode');
+        $mode = $this->pref('parse_mode');
         if ($mode === 'MarkdownV2') {
             foreach ($vars as $k => $v) {
                 if ($k === 'ticket_link') {
@@ -785,7 +847,7 @@ class TelegramBotNotificationsPlugin extends Plugin {
     }
 
     private function ticketLink(Ticket $ticket) {
-        $base = trim((string) $this->cfg()->get('base_url'));
+        $base = trim((string) $this->pref('base_url'));
         if ($base === '') { return ''; }
         return rtrim($base, '/') . '/scp/tickets.php?id=' . (int) $ticket->getId();
     }
@@ -797,7 +859,7 @@ class TelegramBotNotificationsPlugin extends Plugin {
             $entries = $thread->getEntries();
             if (!$entries) { return ''; }
             $first = $entries[0];
-            $mode = $this->cfg()->get('parse_mode');
+            $mode = $this->pref('parse_mode');
             return TgFormatter::truncate($this->bodyToText($first->getBody(), $mode), 2500);
         } catch (Exception $e) {
             return '';
@@ -839,8 +901,7 @@ class TelegramBotNotificationsPlugin extends Plugin {
      * For admins: "View ticket" + optional "Reply".
      */
     private function buildKeyboard(Ticket $ticket, $forAdmin) {
-        $cfg = $this->cfg();
-        $base = trim((string) $cfg->get('base_url'));
+        $base = trim((string) $this->pref('base_url'));
         if ($base === '') {
             return null;
         }
@@ -849,12 +910,12 @@ class TelegramBotNotificationsPlugin extends Plugin {
         $kb   = new TgInlineKeyboard();
         $kb->addRow();
 
-        if ($cfg->get('btn_view_ticket')) {
-            $label = trim((string) $cfg->get('btn_view_ticket_label')) ?: 'View ticket';
+        if ($this->pref('btn_view_ticket')) {
+            $label = trim((string) $this->pref('btn_view_ticket_label')) ?: 'View ticket';
             $kb->urlButton($label, $base . '/scp/tickets.php?id=' . $tid);
         }
-        if ($forAdmin && $cfg->get('btn_reply')) {
-            $label = trim((string) $cfg->get('btn_reply_label')) ?: 'Reply';
+        if ($forAdmin && $this->pref('btn_reply')) {
+            $label = trim((string) $this->pref('btn_reply_label')) ?: 'Reply';
             $kb->urlButton($label, $base . '/scp/tickets.php?id=' . $tid . '#reply');
         }
         return $kb->build();

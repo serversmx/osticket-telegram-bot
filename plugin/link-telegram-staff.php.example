@@ -4,11 +4,12 @@
  *
  * Drop at <osticket>/scp/link-telegram.php
  *
- * Four tabs:
+ * Five tabs:
  *   1. 🔗 Mi vinculación         — all staff. Personal link status + actions.
  *   2. 🔔 Notificaciones         — admin only. Master switches + admin chat IDs + per-event matrix.
- *   3. 📝 Plantillas             — admin only. Parse mode + base URL + 8 message templates.
- *   4. 🎨 Formato                — admin only. URL previews, silent send, inline buttons, pacing.
+ *   3. 👤 Vinculación clientes   — admin only. Deep-link, manual chat_id, opt-in, token TTL.
+ *   4. 📝 Plantillas             — admin only. Parse mode + base URL + 8 message templates.
+ *   5. 🎨 Formato                — admin only. URL previews, silent send, inline buttons, pacing.
  *
  * Settings save into the same `ostt4_config` namespace as the plugin
  * admin page, so they take effect immediately and stay in sync.
@@ -64,7 +65,7 @@ $namespace  = 'plugin.' . $pluginId . '.instance.' . $instanceId;
 
 $validTabs = array('link');
 if ($isAdmin) {
-    $validTabs = array('link', 'notif', 'templates', 'format');
+    $validTabs = array('link', 'notif', 'linking', 'templates', 'format');
 }
 // NOTE: do NOT name this `$tab` — osTicket's navigation.tmpl.php iterates
 // `foreach ($tabs as $name => $tab)` inside header.inc.php, which clobbers
@@ -187,6 +188,27 @@ if ($action === 'save_templates' && $isAdmin && $_SERVER['REQUEST_METHOD'] === '
         tg_save_keys($namespace, $payload);
         $okMsg = 'Plantillas guardadas.';
     }
+}
+
+if ($action === 'save_linking' && $isAdmin && $_SERVER['REQUEST_METHOD'] === 'POST') {
+    $manualVar = trim((string) (isset($_POST['manual_chat_id_field_variable']) ? $_POST['manual_chat_id_field_variable'] : 'telegram_chat_id'));
+    if ($manualVar === '') { $manualVar = 'telegram_chat_id'; }
+    $optInVar = trim((string) (isset($_POST['opt_in_field_variable']) ? $_POST['opt_in_field_variable'] : 'telegram_opt_in'));
+    if ($optInVar === '') { $optInVar = 'telegram_opt_in'; }
+    $ttl = (int) preg_replace('/\D+/', '', (string) (isset($_POST['link_token_ttl']) ? $_POST['link_token_ttl'] : '900'));
+    if ($ttl < 60)    { $ttl = 60; }
+    if ($ttl > 86400) { $ttl = 86400; }
+    $payload = array(
+        'allow_deeplink_linking'        => !empty($_POST['allow_deeplink_linking']) ? '1' : '0',
+        'allow_manual_chat_id'          => !empty($_POST['allow_manual_chat_id'])   ? '1' : '0',
+        'manual_chat_id_field_variable' => $manualVar,
+        'respect_user_opt_in'           => !empty($_POST['respect_user_opt_in'])    ? '1' : '0',
+        'opt_in_field_variable'         => $optInVar,
+        'opt_in_default_when_absent'    => !empty($_POST['opt_in_default_when_absent']) ? '1' : '0',
+        'link_token_ttl'                => (string) $ttl,
+    );
+    tg_save_keys($namespace, $payload);
+    $okMsg = 'Preferencias de vinculación guardadas.';
 }
 
 if ($action === 'save_format' && $isAdmin && $_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -334,6 +356,7 @@ $botUsername = (string) $pluginCfg->get('bot_username');
         <li class="<?php echo $activeTab === 'link' ? 'active' : ''; ?>"><a href="?tab=link">🔗 Mi vinculación</a></li>
         <?php if ($isAdmin): ?>
             <li class="<?php echo $activeTab === 'notif' ? 'active' : ''; ?>"><a href="?tab=notif">🔔 Notificaciones</a></li>
+            <li class="<?php echo $activeTab === 'linking' ? 'active' : ''; ?>"><a href="?tab=linking">👤 Vinculación clientes</a></li>
             <li class="<?php echo $activeTab === 'templates' ? 'active' : ''; ?>"><a href="?tab=templates">📝 Plantillas</a></li>
             <li class="<?php echo $activeTab === 'format' ? 'active' : ''; ?>"><a href="?tab=format">🎨 Formato</a></li>
         <?php endif; ?>
@@ -509,7 +532,72 @@ $botUsername = (string) $pluginCfg->get('bot_username');
         </form>
     <?php endif; ?>
 
-    <?php // ═════════════════ TAB 3: Plantillas (admin) ═════════════════ ?>
+    <?php // ═════════════════ TAB 3: Vinculación clientes (admin) ═════════════════ ?>
+    <?php if ($activeTab === 'linking' && $isAdmin):
+        $g = function ($k, $d = '') use ($namespace) { return tg_read($namespace, $k, $d); };
+        $on = function ($k, $d = '0') use ($g) { return $g($k, $d) === '1'; };
+    ?>
+        <form method="POST" class="tg-card">
+            <?php csrf_token(); ?>
+            <input type="hidden" name="action" value="save_linking">
+
+            <div class="tg-section-label">Cómo pueden vincular su Telegram los clientes</div>
+            <div class="tg-form-grid">
+                <label for="allow_deeplink_linking">Vinculación por deep-link</label>
+                <div>
+                    <input type="checkbox" id="allow_deeplink_linking" name="allow_deeplink_linking" value="1" <?php echo $on('allow_deeplink_linking', '1') ? 'checked' : ''; ?>>
+                    <span style="opacity:0.75;">Muestra el botón <em>Link Telegram</em> en el perfil del cliente. Abre <code>t.me/&lt;bot&gt;?start=&lt;token&gt;</code>; el bot responde "Linked!" al consumir el token. Requiere webhook configurado.</span>
+                </div>
+
+                <label for="allow_manual_chat_id">Permitir chat_id manual</label>
+                <div>
+                    <input type="checkbox" id="allow_manual_chat_id" name="allow_manual_chat_id" value="1" <?php echo $on('allow_manual_chat_id', '1') ? 'checked' : ''; ?>>
+                    <span style="opacity:0.75;">Lee el <code>chat_id</code> desde un campo personalizado del formulario "Información de contacto". Funciona sin webhook.</span>
+                </div>
+
+                <label for="manual_chat_id_field_variable">Variable del campo chat_id</label>
+                <div>
+                    <input type="text" id="manual_chat_id_field_variable" name="manual_chat_id_field_variable" value="<?php echo Format::htmlchars($g('manual_chat_id_field_variable', 'telegram_chat_id')); ?>" placeholder="telegram_chat_id" style="max-width:280px;">
+                    <div class="tg-help" style="opacity:0.7;font-size:0.85em;margin-top:4px;">El "Variable Name" del campo en el formulario que guarda el chat_id.</div>
+                </div>
+            </div>
+
+            <div class="tg-section-label">Opt-in del cliente</div>
+            <div class="tg-form-grid">
+                <label for="respect_user_opt_in">Respetar preferencia de opt-in</label>
+                <div>
+                    <input type="checkbox" id="respect_user_opt_in" name="respect_user_opt_in" value="1" <?php echo $on('respect_user_opt_in', '1') ? 'checked' : ''; ?>>
+                    <span style="opacity:0.75;">Consulta un checkbox de opt-in en el perfil del cliente. Si el cliente lo desmarcó, no enviar.</span>
+                </div>
+
+                <label for="opt_in_field_variable">Variable del campo opt-in</label>
+                <div>
+                    <input type="text" id="opt_in_field_variable" name="opt_in_field_variable" value="<?php echo Format::htmlchars($g('opt_in_field_variable', 'telegram_opt_in')); ?>" placeholder="telegram_opt_in" style="max-width:280px;">
+                </div>
+
+                <label for="opt_in_default_when_absent">Default a opt-IN cuando falta el campo</label>
+                <div>
+                    <input type="checkbox" id="opt_in_default_when_absent" name="opt_in_default_when_absent" value="1" <?php echo $on('opt_in_default_when_absent', '1') ? 'checked' : ''; ?>>
+                    <span style="opacity:0.75;">Si el cliente no tiene el campo en su perfil, se asume opt-IN. Recomendado para retro-compatibilidad.</span>
+                </div>
+            </div>
+
+            <div class="tg-section-label">Tokens de vinculación</div>
+            <div class="tg-form-grid">
+                <label for="link_token_ttl">TTL del token (segundos)</label>
+                <div>
+                    <input type="number" id="link_token_ttl" name="link_token_ttl" value="<?php echo Format::htmlchars($g('link_token_ttl', '900')); ?>" min="60" max="86400" style="max-width:200px;">
+                    <div class="tg-help" style="opacity:0.7;font-size:0.85em;margin-top:4px;">Cuánto tiempo dura un token <code>/start</code> antes de expirar. Default 900 = 15 min.</div>
+                </div>
+            </div>
+
+            <div class="tg-save-bar">
+                <button type="submit" class="tg-btn tg-btn-primary">💾 Guardar vinculación</button>
+            </div>
+        </form>
+    <?php endif; ?>
+
+    <?php // ═════════════════ TAB 4: Plantillas (admin) ═════════════════ ?>
     <?php if ($activeTab === 'templates' && $isAdmin):
         $g = function ($k, $d = '') use ($namespace, $pluginCfg) {
             $v = tg_read($namespace, $k, '__NONE__');
@@ -567,7 +655,7 @@ $botUsername = (string) $pluginCfg->get('bot_username');
         </form>
     <?php endif; ?>
 
-    <?php // ═════════════════ TAB 4: Formato (admin) ═════════════════ ?>
+    <?php // ═════════════════ TAB 5: Formato (admin) ═════════════════ ?>
     <?php if ($activeTab === 'format' && $isAdmin):
         $g = function ($k, $d = '') use ($namespace, $pluginCfg) {
             $v = tg_read($namespace, $k, '__NONE__');

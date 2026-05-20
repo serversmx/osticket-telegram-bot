@@ -2,6 +2,19 @@
 /**
  * Admin configuration UI for the Telegram Bot Notifications plugin.
  *
+ * Only instance-level settings live here:
+ *   - Bot credentials / HTTP
+ *   - Webhook (URL + secret)
+ *   - Sentry
+ *   - Debug
+ *
+ * All notification preferences (recipients, customer opt-in / linking flow,
+ * per-event matrix, parse mode, templates, inline buttons, pacing) are
+ * managed from `<osticket>/scp/link-telegram.php` (the staff-facing tabs).
+ * Defaults for those keys live in `TelegramBotNotificationsPlugin::prefDefaults()`
+ * so a brand-new install still has working notifications before an admin
+ * opens the staff page.
+ *
  * @license GPL-2.0-or-later
  */
 
@@ -10,14 +23,8 @@ require_once INCLUDE_DIR . 'class.forms.php';
 
 class TelegramBotNotificationsPluginConfig extends PluginConfig {
 
-    /** Plain-text textarea (no Redactor / WYSIWYG). */
-    private static function plainTextarea($rows = 6, $cols = 60) {
-        return array('html' => false, 'rows' => $rows, 'cols' => $cols);
-    }
-
     /**
      * Inline CSS injection so the plugin admin page has reasonable padding.
-     * Same approach as osticket-evolution-api.
      */
     private static function styleInjection() {
         return '<style>'
@@ -54,12 +61,13 @@ class TelegramBotNotificationsPluginConfig extends PluginConfig {
                     . 'border-left:4px solid #2563eb;border-radius:6px;margin:0 0 18px;'
                     . 'font-size:0.95em;">'
                     . '<strong>💡 Esta página es solo para configuración de instancia</strong> '
-                    . '(bot, webhook, linking flow, Sentry, debug).<br>'
+                    . '(bot, webhook, Sentry, debug).<br>'
                     . 'Las <strong>preferencias de notificación</strong> '
-                    . '(eventos, plantillas, formato, botones) se gestionan en '
+                    . '(destinatarios, vinculación de clientes, eventos, plantillas, formato, botones) '
+                    . 'se gestionan desde el panel staff: '
                     . '<a href="../scp/link-telegram.php" style="color:#2563eb;'
                     . 'text-decoration:none;font-weight:600;">'
-                    . 'Applications → Telegram</a> (más cómodo y se actualiza en tiempo real).'
+                    . 'Applications → Telegram</a>.'
                     . '</div>'
                 ),
             )),
@@ -106,88 +114,10 @@ class TelegramBotNotificationsPluginConfig extends PluginConfig {
                 'hint'    => 'How many times to attempt each Bot API call when the response is a transient failure (network error, 429, 5xx). Backs off exponentially and honors Telegram\'s retry_after / Retry-After header. 1 disables retries.',
             )),
 
-            // ─── Master recipient toggles ───────────────────────────────────
-            'sec_recipients' => new SectionBreakField(array(
-                'label' => '👥  Recipients — master switches',
-                'hint'  => 'These are kill-switches that apply to every event. Per-event toggles only fire when the matching master switch is on.',
-            )),
-
-            'notify_clients' => new BooleanField(array(
-                'label'   => 'Notify customers (end users)',
-                'default' => true,
-                'configuration' => array(
-                    'desc' => 'Send notifications to customers who have linked their Telegram account.',
-                ),
-            )),
-            'notify_admins' => new BooleanField(array(
-                'label'   => 'Notify staff/admins',
-                'default' => true,
-                'configuration' => array(
-                    'desc' => 'Send a copy of every enabled event to the admin chat(s) below.',
-                ),
-            )),
-            'admin_chat_ids' => new TextareaField(array(
-                'label'    => 'Admin Telegram chat IDs',
-                'configuration' => self::plainTextarea(3, 60),
-                'hint'     => 'One per line. A chat ID can be a positive integer (private user), a negative integer prefixed with -100 (supergroup or channel), or any chat the bot has been added to. Get IDs with @userinfobot. Example: -1001234567890',
-            )),
-
-            // ─── User opt-in & linking ──────────────────────────────────────
-            'sec_optin' => new SectionBreakField(array(
-                'label' => '🙋  Customer opt-in & linking',
-                'hint'  => 'How customers connect their Telegram account. Either method may be used; both can be enabled simultaneously. See docs/user-linking.md.',
-            )),
-
-            'allow_deeplink_linking' => new BooleanField(array(
-                'label'   => 'Enable bot deep-link linking',
-                'default' => true,
-                'configuration' => array(
-                    'desc' => 'Show a "Link Telegram" button on the customer\'s osTicket profile. Clicking opens t.me/<bot>?start=<token>; the bot replies "Linked!" once the token is consumed. Requires the webhook configured below.',
-                ),
-            )),
-            'allow_manual_chat_id' => new BooleanField(array(
-                'label'   => 'Allow manual chat_id entry',
-                'default' => true,
-                'configuration' => array(
-                    'desc' => 'Read the customer\'s chat_id from a custom field on the Contact Information form (variable name below). Works without a webhook.',
-                ),
-            )),
-            'manual_chat_id_field_variable' => new TextboxField(array(
-                'label'    => 'Manual chat_id field variable name',
-                'default'  => 'telegram_chat_id',
-                'configuration' => array('size' => 40, 'length' => 80),
-                'hint'     => 'The "Variable Name" on the Contact Information form field that holds the chat_id. Used only when manual entry is enabled.',
-            )),
-            'respect_user_opt_in' => new BooleanField(array(
-                'label'   => 'Respect customer opt-in preference',
-                'default' => true,
-                'configuration' => array(
-                    'desc' => 'Look up an opt-in checkbox on the Contact Information form. Skip the send when the customer has opted out.',
-                ),
-            )),
-            'opt_in_field_variable' => new TextboxField(array(
-                'label'    => 'Opt-in field variable name',
-                'default'  => 'telegram_opt_in',
-                'configuration' => array('size' => 40, 'length' => 80),
-            )),
-            'opt_in_default_when_absent' => new BooleanField(array(
-                'label'   => 'Default to opt-IN when field is absent',
-                'default' => true,
-                'configuration' => array(
-                    'desc' => 'When the opt-in field is missing from the customer\'s profile, the default behavior. Recommended ON for backwards compatibility with existing customers.',
-                ),
-            )),
-            'link_token_ttl' => new TextboxField(array(
-                'label'   => 'Linking token TTL (seconds)',
-                'default' => '900',
-                'configuration' => array('size' => 10, 'length' => 8),
-                'hint'    => 'How long a generated /start linking token remains valid before the customer must re-request it. Default 900 = 15 minutes.',
-            )),
-
             // ─── Webhook ─────────────────────────────────────────────────────
             'sec_webhook' => new SectionBreakField(array(
                 'label' => '🌐  Webhook (for inbound bot updates)',
-                'hint'  => 'Configure the bot to call your osTicket install when users send /start, /unlink, etc. Required for deep-link linking. After saving, click "Update webhook" in the linked docs / use the /tg-set-webhook command.',
+                'hint'  => 'Configure the bot to call your osTicket install when users send /start, /unlink, etc. Required for deep-link linking. After saving, use the /tg-set-webhook command.',
             )),
 
             'webhook_public_url' => new TextboxField(array(
@@ -201,174 +131,10 @@ class TelegramBotNotificationsPluginConfig extends PluginConfig {
                 'hint'    => 'Sent by Telegram in the X-Telegram-Bot-Api-Secret-Token header. Recommended: 32+ random characters (alphanumeric, _, -). Generate with: openssl rand -hex 24.',
             )),
 
-            // ─── Events ──────────────────────────────────────────────────────
-            'sec_events' => new SectionBreakField(array(
-                'label' => '🔔  Per-event notification matrix',
-                'hint'  => 'Independent toggle per audience per event. Same model as the Evolution API plugin.',
-            )),
-
-            'evt_ticket_created__client' => new BooleanField(array(
-                'label' => 'Ticket created → notify customer',
-                'default' => true,
-            )),
-            'evt_ticket_created__admin' => new BooleanField(array(
-                'label' => 'Ticket created → notify admins',
-                'default' => true,
-            )),
-            'evt_user_reply__admin' => new BooleanField(array(
-                'label' => 'Customer reply → notify admins',
-                'default' => true,
-            )),
-            'evt_staff_reply__client' => new BooleanField(array(
-                'label' => 'Staff reply → notify customer',
-                'default' => true,
-            )),
-            'evt_staff_reply__admin' => new BooleanField(array(
-                'label' => 'Staff reply → notify admins',
-                'default' => false,
-            )),
-            'evt_status_changed__client' => new BooleanField(array(
-                'label' => 'Status changed → notify customer',
-                'default' => true,
-            )),
-            'evt_status_changed__admin' => new BooleanField(array(
-                'label' => 'Status changed → notify admins',
-                'default' => false,
-            )),
-            'evt_assignment_changed__admin' => new BooleanField(array(
-                'label' => 'Assignment changed → notify admins',
-                'default' => false,
-            )),
-
-            // ─── Formatting ──────────────────────────────────────────────────
-            'sec_format' => new SectionBreakField(array(
-                'label' => '✉️  Message formatting',
-                'hint'  => 'Telegram supports HTML (recommended — forgiving with punctuation like dots and dashes) or MarkdownV2 (strict — every reserved char must be escaped, even literal `.` `-` `!` etc.). Variable values from osTicket are automatically escaped for the chosen mode. Templates below use {{var}} and {{var|fallback}} placeholders.',
-            )),
-
-            'parse_mode' => new ChoiceField(array(
-                'label'   => 'Parse mode',
-                'default' => 'HTML',
-                'choices' => array(
-                    'HTML'       => 'HTML (recommended)',
-                    'MarkdownV2' => 'MarkdownV2 (advanced — escape every reserved char in your templates manually)',
-                    ''           => 'Plain text (no formatting)',
-                ),
-            )),
-            'disable_web_page_preview' => new BooleanField(array(
-                'label'   => 'Disable URL previews',
-                'default' => true,
-                'configuration' => array(
-                    'desc' => 'When on, Telegram won\'t expand link cards for URLs in the message.',
-                ),
-            )),
-            'disable_notification' => new BooleanField(array(
-                'label'   => 'Silent send (no sound)',
-                'default' => false,
-                'configuration' => array(
-                    'desc' => 'Messages are delivered with no notification sound. Useful for low-priority events.',
-                ),
-            )),
-
-            // ─── Templates ───────────────────────────────────────────────────
-            'sec_templates' => new SectionBreakField(array(
-                'label' => '📝  Message templates',
-                'hint'  => 'Placeholders: {{ticket_number}} {{subject}} {{name}} {{email}} {{department}} {{priority}} {{status}} {{assignee}} {{poster_type}} {{message}} {{ticket_link}}. HTML tags supported by Telegram: <b>bold</b>, <i>italic</i>, <u>underline</u>, <s>strike</s>, <code>code</code>, <a href="https://example.com">link</a>. Variable values are auto-escaped (&lt;, &gt;, &amp;).',
-            )),
-
-            'tpl_client_created' => new TextareaField(array(
-                'label'   => 'To customer — ticket created',
-                'default' => "Hello <b>{{name}}</b>, we received your ticket <b>#{{ticket_number}}</b>\n<i>{{subject}}</i>\n\nAn agent will get back to you shortly.",
-                'configuration' => self::plainTextarea(6, 60),
-            )),
-            'tpl_client_staff_reply' => new TextareaField(array(
-                'label'   => 'To customer — staff replied',
-                'default' => "Hello <b>{{name}}</b>, there's a new reply on ticket <b>#{{ticket_number}}</b>:\n\n{{message}}",
-                'configuration' => self::plainTextarea(6, 60),
-            )),
-            'tpl_client_status' => new TextareaField(array(
-                'label'   => 'To customer — status changed',
-                'default' => "Ticket <b>#{{ticket_number}}</b> status changed to <b>{{status}}</b>.",
-                'configuration' => self::plainTextarea(4, 60),
-            )),
-            'tpl_admin_created' => new TextareaField(array(
-                'label'   => 'To admin — ticket created',
-                'default' => "<b>New ticket #{{ticket_number}}</b>\n<b>Subject:</b> {{subject}}\n<b>From:</b> {{name}} ({{email}})\n<b>Department:</b> {{department}}\n<b>Priority:</b> {{priority}}\n\n{{message}}",
-                'configuration' => self::plainTextarea(8, 60),
-            )),
-            'tpl_admin_user_reply' => new TextareaField(array(
-                'label'   => 'To admin — customer replied',
-                'default' => "<b>Reply on ticket #{{ticket_number}}</b>\n<b>From customer:</b> {{name}}\n\n{{message}}",
-                'configuration' => self::plainTextarea(6, 60),
-            )),
-            'tpl_admin_staff_reply' => new TextareaField(array(
-                'label'   => 'To admin — staff replied',
-                'default' => "<b>Staff reply on ticket #{{ticket_number}}</b>\n<b>By:</b> {{name}}\n\n{{message}}",
-                'configuration' => self::plainTextarea(6, 60),
-            )),
-            'tpl_admin_status' => new TextareaField(array(
-                'label'   => 'To admin — status changed',
-                'default' => "Ticket <b>#{{ticket_number}}</b> → <b>{{status}}</b> (assignee: {{assignee|—}})",
-                'configuration' => self::plainTextarea(4, 60),
-            )),
-            'tpl_admin_assignment' => new TextareaField(array(
-                'label'   => 'To admin — assignment changed',
-                'default' => "Ticket <b>#{{ticket_number}}</b> assigned to <b>{{assignee}}</b>.",
-                'configuration' => self::plainTextarea(4, 60),
-            )),
-
-            // ─── Inline buttons ──────────────────────────────────────────────
-            'sec_buttons' => new SectionBreakField(array(
-                'label' => '🔘  Inline buttons',
-                'hint'  => 'Attach inline keyboard buttons to outgoing messages. Customers and admins see them under the message and can tap to open the ticket in their browser.',
-            )),
-
-            'btn_view_ticket' => new BooleanField(array(
-                'label'   => 'Show "View ticket" button',
-                'default' => true,
-                'configuration' => array(
-                    'desc' => 'Adds a URL button labeled "View ticket" that opens the ticket page in osTicket.',
-                ),
-            )),
-            'btn_view_ticket_label' => new TextboxField(array(
-                'label'   => '"View ticket" button label',
-                'default' => '🎟 View ticket',
-                'configuration' => array('size' => 40, 'length' => 60),
-            )),
-            'btn_reply' => new BooleanField(array(
-                'label'   => 'Show "Reply" button (admins only)',
-                'default' => true,
-                'configuration' => array(
-                    'desc' => 'Adds a URL button that takes admins straight to the reply form. Hidden for customer notifications.',
-                ),
-            )),
-            'btn_reply_label' => new TextboxField(array(
-                'label'   => '"Reply" button label',
-                'default' => '💬 Reply',
-                'configuration' => array('size' => 40, 'length' => 60),
-            )),
-
-            // ─── Misc ────────────────────────────────────────────────────────
-            'sec_misc' => new SectionBreakField(array(
-                'label' => '🌐  Links & pacing',
-            )),
-
-            'base_url' => new TextboxField(array(
-                'label'   => 'osTicket base URL',
-                'configuration' => array('size' => 60, 'length' => 200),
-                'hint'    => 'Required when {{ticket_link}} or inline buttons are used. Example: https://tickets.example.com (no trailing slash).',
-            )),
-            'send_delay_ms' => new TextboxField(array(
-                'label'   => 'Delay between admin sends (ms)',
-                'default' => '0',
-                'configuration' => array('size' => 8, 'length' => 6),
-                'hint'    => 'Pacing between consecutive admin chat sends to avoid Telegram rate limits (30 messages/sec to different chats, 1 msg/sec to the same chat). 0 disables pacing.',
-            )),
-
             // ─── Sentry (optional) ───────────────────────────────────────────
             'sec_sentry' => new SectionBreakField(array(
                 'label' => '🛡️  Sentry — error reporting (optional)',
-                'hint'  => 'Same lightweight Sentry integration as the Evolution API plugin. Leave DSN blank to disable.',
+                'hint'  => 'Lightweight Sentry integration. Leave DSN blank to disable.',
             )),
 
             'sentry_dsn' => new PasswordField(array(
@@ -421,20 +187,6 @@ class TelegramBotNotificationsPluginConfig extends PluginConfig {
                 return false;
             }
             $config['bot_api_base_url'] = rtrim($u, '/');
-        }
-        if (isset($config['admin_chat_ids'])) {
-            $raw   = preg_split('/\r?\n/', (string) $config['admin_chat_ids']);
-            $clean = array();
-            foreach ($raw as $line) {
-                $line = trim($line);
-                if ($line === '') { continue; }
-                if (!preg_match('/^-?\d{4,20}$/', $line)) {
-                    $errors['admin_chat_ids'] = sprintf('Invalid chat ID "%s" — must be a signed integer.', $line);
-                    return false;
-                }
-                $clean[] = $line;
-            }
-            $config['admin_chat_ids'] = implode("\n", $clean);
         }
         if (isset($config['webhook_public_url'])) {
             $u = trim($config['webhook_public_url']);
