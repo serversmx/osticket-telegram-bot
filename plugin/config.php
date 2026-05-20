@@ -48,6 +48,22 @@ class TelegramBotNotificationsPluginConfig extends PluginConfig {
                 'configuration' => array('content' => self::styleInjection()),
             )),
 
+            '_notice' => new FreeTextField(array(
+                'configuration' => array('content' =>
+                    '<div style="padding:14px 18px;background:rgba(37,99,235,0.08);'
+                    . 'border-left:4px solid #2563eb;border-radius:6px;margin:0 0 18px;'
+                    . 'font-size:0.95em;">'
+                    . '<strong>💡 Esta página es solo para configuración de instancia</strong> '
+                    . '(bot, webhook, linking flow, Sentry, debug).<br>'
+                    . 'Las <strong>preferencias de notificación</strong> '
+                    . '(eventos, plantillas, formato, botones) se gestionan en '
+                    . '<a href="../scp/link-telegram.php" style="color:#2563eb;'
+                    . 'text-decoration:none;font-weight:600;">'
+                    . 'Applications → Telegram</a> (más cómodo y se actualiza en tiempo real).'
+                    . '</div>'
+                ),
+            )),
+
             // ─── Bot credentials ─────────────────────────────────────────────
             'sec_bot' => new SectionBreakField(array(
                 'label' => '🤖  Telegram Bot — Connection',

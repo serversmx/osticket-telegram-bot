@@ -1,19 +1,20 @@
 <?php
 /**
- * Staff-facing Telegram link management page.
+ * Staff-facing Telegram management page.
  *
- * Drop this file in osTicket's `scp/` directory:
+ * Drop at <osticket>/scp/link-telegram.php
  *
- *   cp plugin/link-telegram-staff.php.example /path/to/osticket/scp/link-telegram.php
+ * Four tabs:
+ *   1. 🔗 Mi vinculación         — all staff. Personal link status + actions.
+ *   2. 🔔 Notificaciones         — admin only. Master switches + admin chat IDs + per-event matrix.
+ *   3. 📝 Plantillas             — admin only. Parse mode + base URL + 8 message templates.
+ *   4. 🎨 Formato                — admin only. URL previews, silent send, inline buttons, pacing.
  *
- * Renders inside the standard osTicket staff header / footer. Two views:
- *
- *   - Not yet linked:  step-by-step "how it works" + big "Vincular" CTA
- *   - Already linked:  status card with bot info + Unlink button
+ * Settings save into the same `ostt4_config` namespace as the plugin
+ * admin page, so they take effect immediately and stay in sync.
  *
  * NOTE: never use `$cfg` as a local — staff.inc.php sets it as the global
- * OsticketConfig and header.inc.php calls $cfg->getAllowIframes(). Shadowing
- * crashes the page. We use $pluginCfg for the plugin's config.
+ * OsticketConfig.
  *
  * @license GPL-2.0-or-later
  */
@@ -25,8 +26,9 @@ if (!$thisstaff || !$thisstaff->getId() || !$thisstaff->isValid()) {
     exit;
 }
 
-// Locate the plugin + side-load the active instance config.
+// Locate the plugin + active instance.
 $plugin = null;
+$activeInstance = null;
 try {
     $pm = new PluginManager();
     foreach ($pm->allInstalled() as $p) {
@@ -35,6 +37,7 @@ try {
             $plugin = $p;
             if (method_exists($p, 'getActiveInstances')) {
                 foreach ($p->getActiveInstances() as $inst) {
+                    $activeInstance = $inst;
                     $p->getConfig($inst);
                     break;
                 }
@@ -46,22 +49,66 @@ try {
     error_log('[TelegramBot/link-staff] plugin lookup failed: ' . $e->getMessage());
 }
 
-if (!$plugin) {
+if (!$plugin || !$activeInstance) {
     require_once STAFFINC_DIR . 'header.inc.php';
     echo '<div class="error" style="padding:20px;">Telegram plugin not available right now.</div>';
     require_once STAFFINC_DIR . 'footer.inc.php';
     exit;
 }
 
-$staffId = (int) $thisstaff->getId();
-$action  = isset($_POST['action']) ? $_POST['action'] : (isset($_GET['action']) ? $_GET['action'] : '');
+$staffId  = (int) $thisstaff->getId();
+$isAdmin  = method_exists($thisstaff, 'isAdmin') && $thisstaff->isAdmin();
+$instanceId = (int) $activeInstance->getId();
+$pluginId   = (int) $plugin->getId();
+$namespace  = 'plugin.' . $pluginId . '.instance.' . $instanceId;
 
-// ─── Action: start linking ────────────────────────────────────────────
+$validTabs = array('link');
+if ($isAdmin) {
+    $validTabs = array('link', 'notif', 'templates', 'format');
+}
+$tab = isset($_GET['tab']) ? (string) $_GET['tab'] : 'link';
+if (!in_array($tab, $validTabs, true)) {
+    $tab = 'link';
+}
+
+/**
+ * Upsert a batch of config rows in the plugin's instance namespace.
+ * Skips silently if value is null (caller can use null to "not change").
+ */
+function tg_save_keys($namespace, array $keys) {
+    $nsEsc = db_real_escape((string) $namespace, false);
+    foreach ($keys as $k => $v) {
+        if ($v === null) { continue; }
+        $kEsc = db_real_escape((string) $k, false);
+        $vEsc = db_real_escape((string) $v, false);
+        db_query("INSERT INTO " . CONFIG_TABLE
+            . " (namespace, `key`, value) VALUES (\"" . $nsEsc . "\", \"" . $kEsc . "\", \"" . $vEsc . "\")"
+            . " ON DUPLICATE KEY UPDATE value=\"" . $vEsc . "\"");
+    }
+}
+
+/** Read a row's current value, or return $default if missing. */
+function tg_read($namespace, $key, $default = '') {
+    $nsEsc = db_real_escape((string) $namespace, false);
+    $kEsc  = db_real_escape((string) $key, false);
+    $res = db_query("SELECT value FROM " . CONFIG_TABLE
+        . " WHERE namespace=\"" . $nsEsc . "\" AND `key`=\"" . $kEsc . "\" LIMIT 1");
+    if ($res && ($row = db_fetch_array($res))) {
+        return (string) $row['value'];
+    }
+    return $default;
+}
+
+// ─── POST handlers ───────────────────────────────────────────────────
+
+$okMsg = '';
+$errorMsg = '';
+$action = isset($_POST['action']) ? (string) $_POST['action'] : '';
+
 if ($action === 'link' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
         $url = $plugin->generateStaffLinkUrl($staffId);
     } catch (Exception $e) {
-        error_log('[TelegramBot/link-staff] generateStaffLinkUrl failed: ' . $e->getMessage());
         $url = null;
     }
     if ($url && preg_match('#^https://t\.me/#', $url)) {
@@ -71,7 +118,6 @@ if ($action === 'link' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     $errorMsg = 'No se pudo generar la URL de vinculación. Intenta de nuevo.';
 }
 
-// ─── Action: unlink ───────────────────────────────────────────────────
 if ($action === 'unlink' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
         $rm = new ReflectionMethod($plugin, 'links');
@@ -80,12 +126,81 @@ if ($action === 'unlink' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $store->unlinkStaffById($staffId);
         $okMsg = 'Telegram desvinculado. Ya no recibirás notificaciones aquí.';
     } catch (Exception $e) {
-        error_log('[TelegramBot/link-staff] unlink failed: ' . $e->getMessage());
         $errorMsg = 'No se pudo desvincular. Intenta de nuevo.';
     }
 }
 
-// ─── Read current link status ────────────────────────────────────────
+if ($action === 'save_notif' && $isAdmin && $_SERVER['REQUEST_METHOD'] === 'POST') {
+    $events = array(
+        'evt_ticket_created__client', 'evt_ticket_created__admin',
+        'evt_user_reply__admin',
+        'evt_staff_reply__client', 'evt_staff_reply__admin',
+        'evt_status_changed__client', 'evt_status_changed__admin',
+        'evt_assignment_changed__admin',
+    );
+    $payload = array(
+        'notify_clients' => isset($_POST['notify_clients']) ? '1' : '0',
+        'notify_admins'  => isset($_POST['notify_admins'])  ? '1' : '0',
+    );
+    // Validate + clean admin chat IDs (signed integer per line).
+    $raw = isset($_POST['admin_chat_ids']) ? (string) $_POST['admin_chat_ids'] : '';
+    $clean = array();
+    foreach (preg_split('/\r?\n/', $raw) as $line) {
+        $line = trim($line);
+        if ($line === '') { continue; }
+        if (preg_match('/^-?\d{4,20}$/', $line)) {
+            $clean[] = $line;
+        }
+    }
+    $payload['admin_chat_ids'] = implode("\n", $clean);
+    foreach ($events as $k) {
+        $payload[$k] = !empty($_POST[$k]) ? '1' : '0';
+    }
+    tg_save_keys($namespace, $payload);
+    $okMsg = 'Preferencias de notificación guardadas.';
+}
+
+if ($action === 'save_templates' && $isAdmin && $_SERVER['REQUEST_METHOD'] === 'POST') {
+    $templates = array(
+        'tpl_client_created', 'tpl_client_staff_reply', 'tpl_client_status',
+        'tpl_admin_created', 'tpl_admin_user_reply', 'tpl_admin_staff_reply',
+        'tpl_admin_status', 'tpl_admin_assignment',
+    );
+    $payload = array();
+    $pm = isset($_POST['parse_mode']) ? (string) $_POST['parse_mode'] : 'HTML';
+    if (!in_array($pm, array('HTML', 'MarkdownV2', ''), true)) {
+        $pm = 'HTML';
+    }
+    $payload['parse_mode'] = $pm;
+    $base = trim((string) (isset($_POST['base_url']) ? $_POST['base_url'] : ''));
+    if ($base !== '' && !preg_match('#^https?://#i', $base)) {
+        $errorMsg = 'La URL base debe empezar con http:// o https://.';
+    } else {
+        $payload['base_url'] = rtrim($base, '/');
+        foreach ($templates as $k) {
+            $payload[$k] = isset($_POST[$k]) ? (string) $_POST[$k] : '';
+        }
+        tg_save_keys($namespace, $payload);
+        $okMsg = 'Plantillas guardadas.';
+    }
+}
+
+if ($action === 'save_format' && $isAdmin && $_SERVER['REQUEST_METHOD'] === 'POST') {
+    $payload = array(
+        'disable_web_page_preview' => !empty($_POST['disable_web_page_preview']) ? '1' : '0',
+        'disable_notification'     => !empty($_POST['disable_notification']) ? '1' : '0',
+        'btn_view_ticket'          => !empty($_POST['btn_view_ticket']) ? '1' : '0',
+        'btn_view_ticket_label'    => isset($_POST['btn_view_ticket_label']) ? (string) $_POST['btn_view_ticket_label'] : '',
+        'btn_reply'                => !empty($_POST['btn_reply']) ? '1' : '0',
+        'btn_reply_label'          => isset($_POST['btn_reply_label']) ? (string) $_POST['btn_reply_label'] : '',
+        'send_delay_ms'            => preg_replace('/\D+/', '', (string) (isset($_POST['send_delay_ms']) ? $_POST['send_delay_ms'] : '0')),
+    );
+    if ($payload['send_delay_ms'] === '') { $payload['send_delay_ms'] = '0'; }
+    tg_save_keys($namespace, $payload);
+    $okMsg = 'Formato y botones guardados.';
+}
+
+// ─── Read current link status (for tab 1) ────────────────────────────
 $linkedChatId = null;
 $linkedAt = null;
 try {
@@ -93,44 +208,33 @@ try {
     $rm->setAccessible(true);
     $store = $rm->invoke($plugin);
     $linkedChatId = $store->chatIdForStaff($staffId);
-    // Read linked_at directly to show "linked since"
     if ($linkedChatId !== null) {
         $res = db_query('SELECT linked_at FROM ' . TABLE_PREFIX . 'telegram_staff_links WHERE staff_id=' . $staffId);
         if ($res && ($row = db_fetch_array($res))) {
             $linkedAt = (int) $row['linked_at'];
         }
     }
-} catch (Exception $e) {
-    error_log('[TelegramBot/link-staff] lookup failed: ' . $e->getMessage());
-}
-
-// IMPORTANT: never use `$cfg` as a local — it's the OsticketConfig global.
-$botUsername = '';
-try {
-    $pluginCfg = $plugin->getConfig();
-    $botUsername = $pluginCfg ? (string) $pluginCfg->get('bot_username') : '';
 } catch (Exception $e) {}
+
+// NEVER reassign $cfg — it's the OsticketConfig global.
+$pluginCfg = $plugin->getConfig();
 
 if ($nav) {
     $nav->setTabActive('dashboard');
 }
 require_once STAFFINC_DIR . 'header.inc.php';
 
-// Mask the chat_id for display: keep first 2 + last 4 digits.
 $maskChat = function ($id) {
     $s = (string) $id;
     $len = strlen($s);
     if ($len <= 6) { return str_repeat('•', $len); }
     return substr($s, 0, 2) . str_repeat('•', $len - 6) . substr($s, -4);
 };
+
+$botUsername = (string) $pluginCfg->get('bot_username');
 ?>
 
 <style>
-/* Theme-agnostic CSS: semi-transparent backgrounds + `color: inherit` so the */
-/* page looks right against any theme (light, dark, custom branded). All */
-/* selectors prefixed with .tg-page to avoid clashing with osTicket. */
-/* Explicit system font stack — `inherit` was falling back to browser default */
-/* serif when osTicket didn't set font-family on the parent container. */
 .tg-page {
     width: 100%;
     color: inherit;
@@ -138,7 +242,19 @@ $maskChat = function ($id) {
     line-height: 1.5;
 }
 .tg-page h2.tg-title { font-size: 1.5em; margin: 0 0 6px; font-weight: 600; color: inherit; }
-.tg-page .tg-subtitle { opacity: 0.7; margin: 0 0 24px; font-size: 0.95em; }
+.tg-page .tg-subtitle { opacity: 0.7; margin: 0 0 18px; font-size: 0.95em; }
+.tg-tabs { list-style: none; padding: 0; margin: 0 0 24px; display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid rgba(127, 127, 127, 0.25); }
+.tg-tabs li { margin: 0; }
+.tg-tabs a {
+    display: inline-block; padding: 10px 16px;
+    text-decoration: none !important; color: inherit;
+    opacity: 0.65; font-weight: 500;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    transition: opacity 0.15s, border-color 0.15s;
+}
+.tg-tabs a:hover { opacity: 1; }
+.tg-tabs li.active a { opacity: 1; font-weight: 600; border-bottom-color: #2563eb; color: #2563eb; }
 .tg-card {
     background: rgba(127, 127, 127, 0.06);
     border: 1px solid rgba(127, 127, 127, 0.2);
@@ -148,56 +264,27 @@ $maskChat = function ($id) {
 .tg-card-linked { border-left: 4px solid #16a34a; }
 .tg-card-unlinked { border-left: 4px solid #2563eb; }
 .tg-status-row { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; flex-wrap: wrap; }
-.tg-status-badge {
-    display: inline-flex; align-items: center; gap: 6px;
-    padding: 5px 12px; border-radius: 999px;
-    font-weight: 600; font-size: 0.85em;
-}
+.tg-status-badge { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 999px; font-weight: 600; font-size: 0.85em; }
 .tg-status-linked { background: rgba(22, 163, 74, 0.15); color: #16a34a; }
 .tg-status-unlinked { background: rgba(37, 99, 235, 0.15); color: #2563eb; }
-.tg-meta-row {
-    display: flex; flex-wrap: wrap; gap: 10px 28px;
-    padding: 14px 16px;
-    background: rgba(127, 127, 127, 0.08);
-    border-radius: 8px; margin: 14px 0;
-}
+.tg-meta-row { display: flex; flex-wrap: wrap; gap: 10px 28px; padding: 14px 16px; background: rgba(127, 127, 127, 0.08); border-radius: 8px; margin: 14px 0; }
 .tg-meta-item { display: flex; flex-direction: column; min-width: 140px; }
 .tg-meta-label { opacity: 0.6; font-size: 0.78em; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 2px; }
 .tg-meta-value { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.95em; color: inherit; }
 .tg-meta-value a { color: #2563eb; text-decoration: none; }
 .tg-meta-value a:hover { text-decoration: underline; }
 .tg-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 18px; }
-.tg-btn {
-    display: inline-flex; align-items: center; gap: 8px;
-    padding: 10px 18px; border-radius: 8px; border: none;
-    cursor: pointer; font-weight: 600; font-size: 0.95em;
-    text-decoration: none !important;
-    transition: transform 0.05s, box-shadow 0.15s, background 0.15s;
-}
+.tg-btn { display: inline-flex; align-items: center; gap: 8px; padding: 10px 18px; border-radius: 8px; border: none; cursor: pointer; font-weight: 600; font-size: 0.95em; text-decoration: none !important; transition: transform 0.05s, box-shadow 0.15s, background 0.15s; font-family: inherit; }
 .tg-btn:hover { box-shadow: 0 2px 6px rgba(0,0,0,0.15); }
 .tg-btn:active { transform: translateY(1px); }
 .tg-btn-primary { background: #2563eb; color: #fff !important; }
 .tg-btn-primary:hover { background: #1d4ed8; color: #fff !important; }
-.tg-btn-danger {
-    background: transparent; color: #dc2626 !important;
-    border: 1px solid rgba(220, 38, 38, 0.4);
-}
+.tg-btn-danger { background: transparent; color: #dc2626 !important; border: 1px solid rgba(220, 38, 38, 0.4); }
 .tg-btn-danger:hover { background: rgba(220, 38, 38, 0.08); }
 .tg-btn-large { padding: 14px 26px; font-size: 1.05em; }
 .tg-steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin: 18px 0; }
-.tg-step {
-    background: rgba(127, 127, 127, 0.06);
-    border: 1px solid rgba(127, 127, 127, 0.2);
-    border-radius: 10px;
-    padding: 16px 12px 12px; text-align: center; position: relative;
-}
-.tg-step-num {
-    position: absolute; top: -12px; left: 50%; transform: translateX(-50%);
-    background: #2563eb; color: #fff;
-    width: 26px; height: 26px; border-radius: 50%;
-    display: flex; align-items: center; justify-content: center;
-    font-weight: 700; font-size: 0.85em;
-}
+.tg-step { background: rgba(127, 127, 127, 0.06); border: 1px solid rgba(127, 127, 127, 0.2); border-radius: 10px; padding: 16px 12px 12px; text-align: center; position: relative; }
+.tg-step-num { position: absolute; top: -12px; left: 50%; transform: translateX(-50%); background: #2563eb; color: #fff; width: 26px; height: 26px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 0.85em; }
 .tg-step-icon { font-size: 1.6em; margin: 8px 0 6px; }
 .tg-step-text { opacity: 0.8; font-size: 0.88em; line-height: 1.4; color: inherit; }
 .tg-info-list { margin: 14px 0 0 0; padding: 0; list-style: none; }
@@ -207,14 +294,46 @@ $maskChat = function ($id) {
 .tg-flash-ok { background: rgba(22, 163, 74, 0.15); color: #16a34a; border: 1px solid rgba(22, 163, 74, 0.3); }
 .tg-flash-err { background: rgba(220, 38, 38, 0.12); color: #dc2626; border: 1px solid rgba(220, 38, 38, 0.3); }
 .tg-divider { margin-top: 18px; padding-top: 16px; border-top: 1px solid rgba(127, 127, 127, 0.2); opacity: 0.7; font-size: 0.88em; }
-@media (max-width: 640px) {
+.tg-form-grid { display: grid; grid-template-columns: 220px 1fr; gap: 14px 20px; align-items: start; }
+.tg-form-grid label { padding-top: 8px; opacity: 0.85; font-weight: 500; }
+.tg-form-grid .tg-help { grid-column: 2 / 3; opacity: 0.65; font-size: 0.85em; margin-top: -8px; }
+.tg-form-grid input[type="text"], .tg-form-grid input[type="number"], .tg-form-grid textarea, .tg-form-grid select {
+    width: 100%; padding: 8px 10px;
+    border: 1px solid rgba(127, 127, 127, 0.3);
+    background: rgba(127, 127, 127, 0.04);
+    color: inherit;
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: 0.95em;
+}
+.tg-form-grid textarea { min-height: 90px; resize: vertical; }
+.tg-form-grid input[type="checkbox"] { margin-right: 6px; }
+.tg-section-label { font-weight: 600; padding: 16px 0 8px; opacity: 0.85; border-top: 1px solid rgba(127, 127, 127, 0.2); margin-top: 16px; }
+.tg-section-label:first-of-type { border-top: 0; margin-top: 0; padding-top: 0; }
+.tg-events-matrix { display: grid; grid-template-columns: 1fr 140px 140px; gap: 8px 16px; align-items: center; padding: 10px 0; }
+.tg-events-matrix-header { font-weight: 600; opacity: 0.7; font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.04em; padding-bottom: 6px; border-bottom: 1px solid rgba(127, 127, 127, 0.2); }
+.tg-save-bar { margin-top: 20px; padding-top: 16px; border-top: 1px solid rgba(127, 127, 127, 0.2); display: flex; gap: 10px; }
+@media (max-width: 720px) {
     .tg-steps { grid-template-columns: 1fr; }
+    .tg-form-grid { grid-template-columns: 1fr; gap: 4px 0; }
+    .tg-form-grid label { padding-top: 12px; }
+    .tg-form-grid .tg-help { grid-column: 1; }
+    .tg-events-matrix { grid-template-columns: 1fr 80px 80px; }
 }
 </style>
 
 <div class="tg-page">
-    <h2 class="tg-title">📲 Notificaciones por Telegram</h2>
-    <p class="tg-subtitle">Recibe alertas de tickets directamente en tu Telegram. Sin contraseñas, sin chat IDs — un clic y listo.</p>
+    <h2 class="tg-title">📲 Telegram</h2>
+    <p class="tg-subtitle">Notificaciones de tickets por Telegram. Vincula tu chat, configura eventos, plantillas y formato.</p>
+
+    <ul class="tg-tabs">
+        <li class="<?php echo $tab === 'link' ? 'active' : ''; ?>"><a href="?tab=link">🔗 Mi vinculación</a></li>
+        <?php if ($isAdmin): ?>
+            <li class="<?php echo $tab === 'notif' ? 'active' : ''; ?>"><a href="?tab=notif">🔔 Notificaciones</a></li>
+            <li class="<?php echo $tab === 'templates' ? 'active' : ''; ?>"><a href="?tab=templates">📝 Plantillas</a></li>
+            <li class="<?php echo $tab === 'format' ? 'active' : ''; ?>"><a href="?tab=format">🎨 Formato</a></li>
+        <?php endif; ?>
+    </ul>
 
     <?php if (!empty($okMsg)): ?>
         <div class="tg-flash tg-flash-ok"><?php echo Format::htmlchars($okMsg); ?></div>
@@ -223,126 +342,282 @@ $maskChat = function ($id) {
         <div class="tg-flash tg-flash-err"><?php echo Format::htmlchars($errorMsg); ?></div>
     <?php endif; ?>
 
-    <?php if ($linkedChatId): ?>
-        <div class="tg-card tg-card-linked">
-            <div class="tg-status-row">
-                <div style="font-size: 2.2em; line-height: 1;">✅</div>
-                <div style="flex: 1; min-width: 200px;">
-                    <div style="font-size: 1.15em; font-weight: 600;">
-                        Cuenta vinculada
+    <?php // ═════════════════ TAB 1: Mi vinculación ═════════════════ ?>
+    <?php if ($tab === 'link'): ?>
+        <?php if ($linkedChatId): ?>
+            <div class="tg-card tg-card-linked">
+                <div class="tg-status-row">
+                    <div style="font-size: 2.2em; line-height: 1;">✅</div>
+                    <div style="flex: 1; min-width: 200px;">
+                        <div style="font-size: 1.15em; font-weight: 600;">Cuenta vinculada</div>
+                        <div style="opacity: 0.7; font-size: 0.92em; margin-top: 2px;">Estás recibiendo notificaciones admin en este chat.</div>
                     </div>
-                    <div style="opacity: 0.7; font-size: 0.92em; margin-top: 2px;">
-                        Estás recibiendo notificaciones admin en este chat.
+                    <span class="tg-status-badge tg-status-linked">● ACTIVO</span>
+                </div>
+                <div class="tg-meta-row">
+                    <div class="tg-meta-item">
+                        <span class="tg-meta-label">Chat ID</span>
+                        <span class="tg-meta-value"><?php echo Format::htmlchars($maskChat($linkedChatId)); ?></span>
+                    </div>
+                    <div class="tg-meta-item">
+                        <span class="tg-meta-label">Bot</span>
+                        <span class="tg-meta-value">
+                            <?php if ($botUsername): ?>
+                                <a href="https://t.me/<?php echo rawurlencode($botUsername); ?>" target="_blank" rel="noopener">@<?php echo Format::htmlchars($botUsername); ?></a>
+                            <?php else: ?>
+                                <em style="opacity: 0.6;">no configurado</em>
+                            <?php endif; ?>
+                        </span>
+                    </div>
+                    <?php if ($linkedAt): ?>
+                        <div class="tg-meta-item">
+                            <span class="tg-meta-label">Vinculado desde</span>
+                            <span class="tg-meta-value"><?php echo Format::htmlchars(date('Y-m-d H:i', $linkedAt)); ?></span>
+                        </div>
+                    <?php endif; ?>
+                </div>
+                <div class="tg-actions">
+                    <?php if ($botUsername): ?>
+                        <a href="https://t.me/<?php echo rawurlencode($botUsername); ?>" target="_blank" rel="noopener" class="tg-btn tg-btn-primary">💬 Abrir chat con el bot</a>
+                    <?php endif; ?>
+                    <form method="POST" style="display: inline;" onsubmit="return confirm('¿Seguro que quieres desvincular? Dejarás de recibir notificaciones aquí.');">
+                        <?php csrf_token(); ?>
+                        <input type="hidden" name="action" value="unlink">
+                        <button class="tg-btn tg-btn-danger" type="submit">🔌 Desvincular</button>
+                    </form>
+                </div>
+            </div>
+            <div class="tg-card">
+                <div style="font-weight: 600; margin-bottom: 12px;">Qué recibes en tu Telegram</div>
+                <ul class="tg-info-list">
+                    <li>Nuevos tickets creados por clientes</li>
+                    <li>Respuestas de clientes en tickets existentes</li>
+                    <li>Cambios de estado del ticket (si están activados en la config)</li>
+                    <li>Reasignaciones de ticket (si están activadas en la config)</li>
+                </ul>
+            </div>
+        <?php else: ?>
+            <div class="tg-card tg-card-unlinked">
+                <div class="tg-status-row">
+                    <div style="font-size: 2.2em; line-height: 1;">📱</div>
+                    <div style="flex: 1; min-width: 200px;">
+                        <div style="font-size: 1.15em; font-weight: 600;">Aún no has vinculado tu Telegram</div>
+                        <div style="opacity: 0.7; font-size: 0.92em; margin-top: 2px;">Toma menos de 30 segundos.</div>
+                    </div>
+                    <span class="tg-status-badge tg-status-unlinked">● PENDIENTE</span>
+                </div>
+                <div class="tg-steps">
+                    <div class="tg-step">
+                        <span class="tg-step-num">1</span>
+                        <div class="tg-step-icon">👇</div>
+                        <div class="tg-step-text">Presiona <strong>Vincular mi Telegram</strong>.</div>
+                    </div>
+                    <div class="tg-step">
+                        <span class="tg-step-num">2</span>
+                        <div class="tg-step-icon">💬</div>
+                        <div class="tg-step-text">Se abre Telegram con un comando precargado. Presiona <strong>Start</strong>.</div>
+                    </div>
+                    <div class="tg-step">
+                        <span class="tg-step-num">3</span>
+                        <div class="tg-step-icon">✅</div>
+                        <div class="tg-step-text">El bot confirma. Listo — recibirás avisos en tu chat.</div>
                     </div>
                 </div>
-                <span class="tg-status-badge tg-status-linked">● ACTIVO</span>
-            </div>
-
-            <div class="tg-meta-row">
-                <div class="tg-meta-item">
-                    <span class="tg-meta-label">Chat ID</span>
-                    <span class="tg-meta-value"><?php echo Format::htmlchars($maskChat($linkedChatId)); ?></span>
+                <div class="tg-actions" style="margin-top: 22px;">
+                    <form method="POST" style="display: inline;">
+                        <?php csrf_token(); ?>
+                        <input type="hidden" name="action" value="link">
+                        <button class="tg-btn tg-btn-primary tg-btn-large" type="submit">🔗 Vincular mi Telegram</button>
+                    </form>
                 </div>
-                <div class="tg-meta-item">
-                    <span class="tg-meta-label">Bot</span>
-                    <span class="tg-meta-value">
-                        <?php if ($botUsername): ?>
-                            <a href="https://t.me/<?php echo rawurlencode($botUsername); ?>" target="_blank" rel="noopener">@<?php echo Format::htmlchars($botUsername); ?></a>
-                        <?php else: ?>
-                            <em style="color:#94a3b8;">no configurado</em>
-                        <?php endif; ?>
-                    </span>
-                </div>
-                <?php if ($linkedAt): ?>
-                <div class="tg-meta-item">
-                    <span class="tg-meta-label">Vinculado desde</span>
-                    <span class="tg-meta-value"><?php echo Format::htmlchars(date('Y-m-d H:i', $linkedAt)); ?></span>
-                </div>
-                <?php endif; ?>
+                <div class="tg-divider"><strong>¿Privacidad?</strong> El bot solo te envía mensajes; no lee tus chats. Si decides desvincular después, simplemente vuelve aquí.</div>
             </div>
-
-            <div class="tg-actions">
-                <?php if ($botUsername): ?>
-                    <a href="https://t.me/<?php echo rawurlencode($botUsername); ?>" target="_blank" rel="noopener" class="tg-btn tg-btn-primary">
-                        💬 Abrir chat con el bot
-                    </a>
-                <?php endif; ?>
-                <form method="POST" style="display: inline;" onsubmit="return confirm('¿Seguro que quieres desvincular? Dejarás de recibir notificaciones aquí.');">
-                    <?php csrf_token(); ?>
-                    <input type="hidden" name="action" value="unlink">
-                    <button class="tg-btn tg-btn-danger" type="submit">🔌 Desvincular</button>
-                </form>
-            </div>
-        </div>
-
-        <div class="tg-card">
-            <div style="font-weight: 600; margin-bottom: 12px;">Qué recibes en tu Telegram</div>
-            <ul class="tg-info-list">
-                <li>Nuevos tickets creados por clientes</li>
-                <li>Respuestas de clientes en tickets existentes</li>
-                <li>Cambios de estado del ticket (si están activados en la config)</li>
-                <li>Reasignaciones de ticket (si están activadas en la config)</li>
-            </ul>
-        </div>
-
-    <?php else: ?>
-        <div class="tg-card tg-card-unlinked">
-            <div class="tg-status-row">
-                <div style="font-size: 2.2em; line-height: 1;">📱</div>
-                <div style="flex: 1; min-width: 200px;">
-                    <div style="font-size: 1.15em; font-weight: 600;">
-                        Aún no has vinculado tu Telegram
-                    </div>
-                    <div style="opacity: 0.7; font-size: 0.92em; margin-top: 2px;">
-                        Toma menos de 30 segundos.
-                    </div>
-                </div>
-                <span class="tg-status-badge tg-status-unlinked">● PENDIENTE</span>
-            </div>
-
-            <div class="tg-steps">
-                <div class="tg-step">
-                    <span class="tg-step-num">1</span>
-                    <div class="tg-step-icon">👇</div>
-                    <div class="tg-step-text">Presiona <strong>Vincular mi Telegram</strong>.</div>
-                </div>
-                <div class="tg-step">
-                    <span class="tg-step-num">2</span>
-                    <div class="tg-step-icon">💬</div>
-                    <div class="tg-step-text">Se abre Telegram con un comando precargado. Presiona <strong>Start</strong>.</div>
-                </div>
-                <div class="tg-step">
-                    <span class="tg-step-num">3</span>
-                    <div class="tg-step-icon">✅</div>
-                    <div class="tg-step-text">El bot confirma. Listo — recibirás avisos en tu chat.</div>
-                </div>
-            </div>
-
-            <div class="tg-actions" style="margin-top: 22px;">
-                <form method="POST" style="display: inline;">
-                    <?php csrf_token(); ?>
-                    <input type="hidden" name="action" value="link">
-                    <button class="tg-btn tg-btn-primary tg-btn-large" type="submit">
-                        🔗 Vincular mi Telegram
-                    </button>
-                </form>
-            </div>
-
-            <div class="tg-divider">
-                <strong>¿Privacidad?</strong> El bot solo te envía mensajes; no lee tus chats. Si decides desvincular después, simplemente vuelve aquí.
-            </div>
-        </div>
-
-        <div class="tg-card">
-            <div style="font-weight: 600; margin-bottom: 12px;">Qué vas a recibir</div>
-            <ul class="tg-info-list">
-                <li>Nuevos tickets creados por clientes</li>
-                <li>Respuestas de clientes en tickets existentes</li>
-                <li>Botones rápidos en cada mensaje para abrir el ticket</li>
-                <li>Solo notificaciones admin — los clientes finales reciben las suyas por separado</li>
-            </ul>
-        </div>
+        <?php endif; ?>
     <?php endif; ?>
+
+    <?php // ═════════════════ TAB 2: Notificaciones (admin) ═════════════════ ?>
+    <?php if ($tab === 'notif' && $isAdmin):
+        $g = function ($k, $d = '') use ($namespace) { return tg_read($namespace, $k, $d); };
+        $on = function ($k, $d = '0') use ($g) { return $g($k, $d) === '1'; };
+        $events = array(
+            'evt_ticket_created'   => array('Ticket creado',          true,  true),
+            'evt_user_reply'       => array('Respuesta del cliente',  null,  true),  // no client side
+            'evt_staff_reply'      => array('Respuesta del staff',    true,  true),
+            'evt_status_changed'   => array('Cambio de estado',       true,  true),
+            'evt_assignment_changed' => array('Cambio de asignación', null,  true),  // no client side
+        );
+    ?>
+        <form method="POST" class="tg-card">
+            <?php csrf_token(); ?>
+            <input type="hidden" name="action" value="save_notif">
+
+            <div class="tg-section-label">Interruptores maestros</div>
+            <div class="tg-form-grid">
+                <label for="notify_clients">Notificar a clientes</label>
+                <div>
+                    <input type="checkbox" id="notify_clients" name="notify_clients" value="1" <?php echo $on('notify_clients') ? 'checked' : ''; ?>>
+                    <span style="opacity:0.75;">Master switch para TODAS las notificaciones a clientes.</span>
+                </div>
+                <label for="notify_admins">Notificar a admins</label>
+                <div>
+                    <input type="checkbox" id="notify_admins" name="notify_admins" value="1" <?php echo $on('notify_admins') ? 'checked' : ''; ?>>
+                    <span style="opacity:0.75;">Master switch para TODAS las notificaciones a admins.</span>
+                </div>
+                <label for="admin_chat_ids">Chats admin (manuales)</label>
+                <div>
+                    <textarea id="admin_chat_ids" name="admin_chat_ids" rows="3" placeholder="Un chat_id por línea. Ejemplo: -1001234567890"><?php echo Format::htmlchars($g('admin_chat_ids')); ?></textarea>
+                </div>
+                <div></div>
+                <div class="tg-help">Chats admin estáticos (grupo de soporte, etc.). Los staff vinculados via "Mi vinculación" se agregan automáticamente.</div>
+            </div>
+
+            <div class="tg-section-label">Matriz de eventos</div>
+            <div class="tg-events-matrix">
+                <div></div>
+                <div class="tg-events-matrix-header">→ Cliente</div>
+                <div class="tg-events-matrix-header">→ Admin</div>
+                <?php foreach ($events as $key => $row):
+                    list($label, $clientOn, $adminOn) = $row;
+                    $kClient = $key . '__client';
+                    $kAdmin  = $key . '__admin';
+                ?>
+                    <div><?php echo Format::htmlchars($label); ?></div>
+                    <div>
+                        <?php if ($clientOn !== null): ?>
+                            <input type="checkbox" name="<?php echo $kClient; ?>" value="1" <?php echo $on($kClient) ? 'checked' : ''; ?>>
+                        <?php else: ?>
+                            <span style="opacity:0.4;">—</span>
+                        <?php endif; ?>
+                    </div>
+                    <div>
+                        <?php if ($adminOn !== null): ?>
+                            <input type="checkbox" name="<?php echo $kAdmin; ?>" value="1" <?php echo $on($kAdmin) ? 'checked' : ''; ?>>
+                        <?php else: ?>
+                            <span style="opacity:0.4;">—</span>
+                        <?php endif; ?>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+
+            <div class="tg-save-bar">
+                <button type="submit" class="tg-btn tg-btn-primary">💾 Guardar notificaciones</button>
+            </div>
+        </form>
+    <?php endif; ?>
+
+    <?php // ═════════════════ TAB 3: Plantillas (admin) ═════════════════ ?>
+    <?php if ($tab === 'templates' && $isAdmin):
+        $g = function ($k, $d = '') use ($namespace, $pluginCfg) {
+            $v = tg_read($namespace, $k, '__NONE__');
+            return $v === '__NONE__' ? (string) $pluginCfg->get($k) : $v;
+        };
+        $templates = array(
+            'tpl_client_created'     => 'Cliente — ticket creado',
+            'tpl_client_staff_reply' => 'Cliente — respuesta del staff',
+            'tpl_client_status'      => 'Cliente — cambio de estado',
+            'tpl_admin_created'      => 'Admin — ticket creado',
+            'tpl_admin_user_reply'   => 'Admin — respuesta del cliente',
+            'tpl_admin_staff_reply'  => 'Admin — respuesta del staff',
+            'tpl_admin_status'       => 'Admin — cambio de estado',
+            'tpl_admin_assignment'   => 'Admin — cambio de asignación',
+        );
+        $currentParseMode = $g('parse_mode', 'HTML');
+    ?>
+        <form method="POST" class="tg-card">
+            <?php csrf_token(); ?>
+            <input type="hidden" name="action" value="save_templates">
+
+            <div class="tg-section-label">Formato y enlaces</div>
+            <div class="tg-form-grid">
+                <label for="parse_mode">Parse mode</label>
+                <div>
+                    <select id="parse_mode" name="parse_mode">
+                        <option value="HTML" <?php echo $currentParseMode === 'HTML' ? 'selected' : ''; ?>>HTML (recomendado)</option>
+                        <option value="MarkdownV2" <?php echo $currentParseMode === 'MarkdownV2' ? 'selected' : ''; ?>>MarkdownV2 (avanzado)</option>
+                        <option value="" <?php echo $currentParseMode === '' ? 'selected' : ''; ?>>Texto plano</option>
+                    </select>
+                </div>
+                <div></div>
+                <div class="tg-help">HTML: <code>&lt;b&gt;negrita&lt;/b&gt; &lt;i&gt;cursiva&lt;/i&gt; &lt;a href="url"&gt;link&lt;/a&gt;</code>. Variables se auto-escapan.</div>
+
+                <label for="base_url">osTicket base URL</label>
+                <div><input type="text" id="base_url" name="base_url" value="<?php echo Format::htmlchars($g('base_url')); ?>" placeholder="https://tickets.example.com"></div>
+                <div></div>
+                <div class="tg-help">Requerida para que <code>{{ticket_link}}</code> y los botones inline funcionen. Sin slash final.</div>
+            </div>
+
+            <div class="tg-section-label">Plantillas</div>
+            <div class="tg-help" style="margin-bottom: 12px;">
+                Placeholders: <code>{{ticket_number}} {{subject}} {{name}} {{email}} {{department}} {{priority}} {{status}} {{assignee}} {{poster_type}} {{message}} {{ticket_link}}</code>
+            </div>
+            <div class="tg-form-grid">
+                <?php foreach ($templates as $key => $label): ?>
+                    <label for="<?php echo $key; ?>"><?php echo Format::htmlchars($label); ?></label>
+                    <div><textarea id="<?php echo $key; ?>" name="<?php echo $key; ?>" rows="4"><?php echo Format::htmlchars($g($key)); ?></textarea></div>
+                <?php endforeach; ?>
+            </div>
+
+            <div class="tg-save-bar">
+                <button type="submit" class="tg-btn tg-btn-primary">💾 Guardar plantillas</button>
+            </div>
+        </form>
+    <?php endif; ?>
+
+    <?php // ═════════════════ TAB 4: Formato (admin) ═════════════════ ?>
+    <?php if ($tab === 'format' && $isAdmin):
+        $g = function ($k, $d = '') use ($namespace, $pluginCfg) {
+            $v = tg_read($namespace, $k, '__NONE__');
+            return $v === '__NONE__' ? (string) $pluginCfg->get($k) : $v;
+        };
+        $on = function ($k) use ($g) { return $g($k) === '1'; };
+    ?>
+        <form method="POST" class="tg-card">
+            <?php csrf_token(); ?>
+            <input type="hidden" name="action" value="save_format">
+
+            <div class="tg-section-label">Opciones de mensaje</div>
+            <div class="tg-form-grid">
+                <label for="disable_web_page_preview">Sin preview de URLs</label>
+                <div>
+                    <input type="checkbox" id="disable_web_page_preview" name="disable_web_page_preview" value="1" <?php echo $on('disable_web_page_preview') ? 'checked' : ''; ?>>
+                    <span style="opacity:0.75;">Suprime las tarjetas de vista previa que Telegram muestra para URLs en los mensajes.</span>
+                </div>
+                <label for="disable_notification">Envío silencioso</label>
+                <div>
+                    <input type="checkbox" id="disable_notification" name="disable_notification" value="1" <?php echo $on('disable_notification') ? 'checked' : ''; ?>>
+                    <span style="opacity:0.75;">Los mensajes llegan sin sonido de notificación.</span>
+                </div>
+                <label for="send_delay_ms">Pacing entre admins (ms)</label>
+                <div><input type="number" id="send_delay_ms" name="send_delay_ms" value="<?php echo Format::htmlchars($g('send_delay_ms', '0')); ?>" min="0" max="60000" style="max-width: 200px;"></div>
+                <div></div>
+                <div class="tg-help">Espacia los sends consecutivos cuando hay muchos chats admin (Telegram permite ~30 msg/s a chats distintos). 0 desactiva el pacing.</div>
+            </div>
+
+            <div class="tg-section-label">Botones inline</div>
+            <div class="tg-form-grid">
+                <label for="btn_view_ticket">Botón "Ver ticket"</label>
+                <div>
+                    <input type="checkbox" id="btn_view_ticket" name="btn_view_ticket" value="1" <?php echo $on('btn_view_ticket') ? 'checked' : ''; ?>>
+                    <span style="opacity:0.75;">Botón URL que abre el ticket en osTicket.</span>
+                </div>
+                <label for="btn_view_ticket_label">Etiqueta</label>
+                <div><input type="text" id="btn_view_ticket_label" name="btn_view_ticket_label" value="<?php echo Format::htmlchars($g('btn_view_ticket_label', 'View ticket')); ?>" placeholder="View ticket"></div>
+
+                <label for="btn_reply">Botón "Responder"</label>
+                <div>
+                    <input type="checkbox" id="btn_reply" name="btn_reply" value="1" <?php echo $on('btn_reply') ? 'checked' : ''; ?>>
+                    <span style="opacity:0.75;">Solo en notificaciones admin. Lleva al form de respuesta.</span>
+                </div>
+                <label for="btn_reply_label">Etiqueta</label>
+                <div><input type="text" id="btn_reply_label" name="btn_reply_label" value="<?php echo Format::htmlchars($g('btn_reply_label', 'Reply')); ?>" placeholder="Reply"></div>
+            </div>
+
+            <div class="tg-save-bar">
+                <button type="submit" class="tg-btn tg-btn-primary">💾 Guardar formato</button>
+            </div>
+        </form>
+    <?php endif; ?>
+
 </div>
 
 <?php
