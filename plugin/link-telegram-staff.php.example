@@ -261,6 +261,7 @@ $maskChat = function ($id) {
                     </a>
                 <?php endif; ?>
                 <form method="POST" style="display: inline;" onsubmit="return confirm('¿Seguro que quieres desvincular? Dejarás de recibir notificaciones aquí.');">
+                    <?php csrf_token(); ?>
                     <input type="hidden" name="action" value="unlink">
                     <button class="tg-btn tg-btn-danger" type="submit">🔌 Desvincular</button>
                 </form>
@@ -312,6 +313,7 @@ $maskChat = function ($id) {
 
             <div class="tg-actions" style="margin-top: 22px;">
                 <form method="POST" style="display: inline;">
+                    <?php csrf_token(); ?>
                     <input type="hidden" name="action" value="link">
                     <button class="tg-btn tg-btn-primary tg-btn-large" type="submit">
                         🔗 Vincular mi Telegram
