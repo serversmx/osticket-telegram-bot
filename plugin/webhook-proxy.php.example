@@ -1,0 +1,27 @@
+<?php
+/**
+ * Public webhook proxy for the osTicket Telegram Bot plugin.
+ *
+ * osTicket protects the include/ directory from direct HTTP access via
+ * an `.htaccess` `Deny from all`. Telegram's webhook needs a public URL
+ * that returns 200, so we expose this thin proxy at the osTicket public
+ * root and delegate via PHP-level file inclusion (which bypasses the
+ * HTTP-layer restriction).
+ *
+ * INSTALL:
+ *   1. Copy this file to the osTicket public root, renaming as needed:
+ *        cp plugin/webhook-proxy.php.example \
+ *           /path/to/osticket/tg-webhook.php
+ *   2. chmod 644 + chown to the web user.
+ *   3. Set the plugin's "Public webhook URL" config to point here, e.g.:
+ *        https://tickets.example.com/tg-webhook.php
+ *   4. Run setWebhook against Telegram (see docs/webhook-setup.md).
+ *
+ * The relative path below assumes both this file and the osTicket root
+ * sit at the same directory level (the default). Adjust if your install
+ * is in a subdirectory.
+ *
+ * @license GPL-2.0-or-later
+ */
+
+require_once __DIR__ . '/include/plugins/telegram-bot/webhook.php';

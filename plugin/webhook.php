@@ -21,24 +21,24 @@
  * @license GPL-2.0-or-later
  */
 
-// 1. Bootstrap osTicket. The plugin folder lives under
-// <osticket>/include/plugins/telegram-bot/. Reach the osTicket root.
-$bootstrap = __DIR__ . '/../../../bootstrap.php';
-if (!is_file($bootstrap)) {
+// 1. Bootstrap osTicket via main.inc.php — the canonical entry point.
+// This handles config load, table-name constant definition, i18n,
+// code load, and DB connect in the same order as every osTicket page.
+// The plugin folder lives under <osticket>/include/plugins/telegram-bot/,
+// so the osTicket root is three directories up.
+$mainInc = __DIR__ . '/../../../main.inc.php';
+if (!is_file($mainInc)) {
     http_response_code(500);
-    error_log('[TelegramBot/webhook] osTicket bootstrap not found at ' . $bootstrap);
+    error_log('[TelegramBot/webhook] osTicket main.inc.php not found at ' . $mainInc);
     exit;
 }
-require_once $bootstrap;
+require_once $mainInc;
 
 if (!class_exists('PluginManager')) {
     http_response_code(500);
     error_log('[TelegramBot/webhook] PluginManager not available — bootstrap failed?');
     exit;
 }
-
-Bootstrap::loadConfig();
-Bootstrap::loadCode();
 
 // 2. Locate the running plugin instance.
 $plugin = null;

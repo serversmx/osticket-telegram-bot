@@ -18,6 +18,39 @@ If you're fine with **manual chat_id entry** (customer pastes their chat_id into
 
 ---
 
+## 1a. Install the public proxy file (required for webhook)
+
+osTicket's `include/` directory has an `.htaccess` `Deny from all` rule that
+blocks direct HTTP access to anything under it — including the plugin's
+own `webhook.php`. This is a deliberate osTicket security measure.
+
+To expose the webhook without weakening that protection, ship a tiny
+proxy file at the osTicket public root that PHP-includes the protected
+webhook handler:
+
+```bash
+# From the deployed plugin folder:
+cp /path/to/osticket/include/plugins/telegram-bot/webhook-proxy.php.example \
+   /path/to/osticket/tg-webhook.php
+chown <web-user>:<web-group> /path/to/osticket/tg-webhook.php
+chmod 644 /path/to/osticket/tg-webhook.php
+```
+
+The proxy is one line of PHP — it just `require_once`s the protected
+`webhook.php`. PHP file inclusion happens at the filesystem level, so
+the `.htaccess` HTTP-layer rule doesn't apply.
+
+Then set the plugin's **"Public webhook URL"** to point at the proxy:
+
+```
+https://your-osticket.example.com/tg-webhook.php
+```
+
+If your osTicket lives in a subdirectory (e.g. `/support/`), put the
+proxy there: `https://example.com/support/tg-webhook.php`.
+
+---
+
 ## 2. Generate a secret token
 
 The secret token is sent by Telegram in every webhook POST as the

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-05-19
+
+### Fixed
+- **`webhook.php` bootstrap was incomplete.** Previously called `bootstrap.php` directly + `Bootstrap::loadConfig()` + `Bootstrap::loadCode()`, which left `FILTER_ACTION_TABLE` and other `defineTables()`-derived constants undefined → fatal error when osTicket's class loader chained into `class.filter_action.php`. Now requires `main.inc.php` (the canonical osTicket entry point), which runs the full bootstrap sequence: `loadConfig → defineTables → i18n_prep → loadCode → connect`.
+
+### Added
+- **`plugin/webhook-proxy.php.example`** — a one-line proxy admins copy to the osTicket public root so Telegram can reach the webhook. Necessary because osTicket's `include/.htaccess` (`Deny from all`) blocks direct HTTP access to the plugin's `webhook.php`. PHP `require_once` at the filesystem level bypasses the `.htaccess` HTTP-layer rule.
+- `docs/webhook-setup.md` updated with a new section walking through proxy install + the resulting `webhook_public_url` value.
+
 ## [0.1.0] - 2026-05-19
 
 ### Added
@@ -31,5 +40,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - All log levels go through `EvoLogRedactor` — chat_ids partially masked, message bodies truncated with length prefix, secrets replaced with `[REDACTED]`.
 - `SECURITY.md` documents threat model, webhook trust boundary, accepted risks, and responsible-disclosure channel.
 
-[Unreleased]: https://github.com/RenatoAscencio/osticket-telegram-bot/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/RenatoAscencio/osticket-telegram-bot/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/RenatoAscencio/osticket-telegram-bot/releases/tag/v0.1.1
 [0.1.0]: https://github.com/RenatoAscencio/osticket-telegram-bot/releases/tag/v0.1.0
