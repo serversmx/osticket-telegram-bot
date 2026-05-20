@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-05-20
+
+### Added
+- **Staff link-telegram page is now a full UI** (`scp/link-telegram.php`) — previously a 302 redirect, now renders inside the standard osTicket staff header/footer with a status badge ("Vinculado ✓" / "No vinculado") and explicit buttons to link or unlink. POSTs back to itself to trigger the redirect or the unlink. No more "what just happened" page.
+- **`scripts/apply-staff-profile-patch.sh`** — idempotent patcher that adds a prominent "🔗 Gestionar Telegram" button block to `include/staff/profile.inc.php`, right above the form. Includes pristine backup (`.pre-tgbot`), `php -l` lint gate before writing, restore instructions in the output. See `docs/staff-profile-patch.md` for why a core-file patch is needed (osTicket 1.18 has no plugin extension point for injecting UI into the staff profile, and plugin bootstrap runs before the global `$ost` exists so `addExtraHeader` from there is a no-op). The script is the cleanest way to opt into the in-profile button without an unreliable JS-injection hack — admins run it explicitly, idempotency makes it safe to re-run after osTicket upgrades.
+- `docs/staff-profile-patch.md` documents the patch, rationale, what gets inserted, and re-application after osTicket upgrades.
+
 ## [0.1.5] - 2026-05-20
 
 ### Added
@@ -86,7 +93,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - All log levels go through `EvoLogRedactor` — chat_ids partially masked, message bodies truncated with length prefix, secrets replaced with `[REDACTED]`.
 - `SECURITY.md` documents threat model, webhook trust boundary, accepted risks, and responsible-disclosure channel.
 
-[Unreleased]: https://github.com/RenatoAscencio/osticket-telegram-bot/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/RenatoAscencio/osticket-telegram-bot/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/RenatoAscencio/osticket-telegram-bot/releases/tag/v0.1.6
 [0.1.5]: https://github.com/RenatoAscencio/osticket-telegram-bot/releases/tag/v0.1.5
 [0.1.4]: https://github.com/RenatoAscencio/osticket-telegram-bot/releases/tag/v0.1.4
 [0.1.3]: https://github.com/RenatoAscencio/osticket-telegram-bot/releases/tag/v0.1.3

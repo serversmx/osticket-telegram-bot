@@ -1,28 +1,18 @@
 <?php
 /**
- * Staff-facing entry point for Telegram account linking.
+ * Staff-facing Telegram link management page.
  *
- * Drop this file in osTicket's `scp/` directory (so it benefits from the
- * staff-scoped routing rules):
+ * Drop this file in osTicket's `scp/` directory so staff can manage
+ * their Telegram link from a real page inside the SCP:
  *
  *   cp plugin/link-telegram-staff.php.example /path/to/osticket/scp/link-telegram.php
  *
- * Flow:
- *   1. Staff member (logged in to the SCP) hits
- *      https://<your-osticket>/scp/link-telegram.php
- *   2. staff.inc.php bootstraps osTicket and enforces staff auth.
- *   3. The plugin mints a one-shot, 15-min-TTL token bound to the
- *      Staff record, builds the t.me deep link.
- *   4. Browser redirects to https://t.me/<bot>?start=<token>.
- *   5. Staff presses Start in Telegram → bot's webhook receives /start
- *      <token> → plugin's handleStart() routes to consumeStaffToken() →
- *      linkStaff() persists (staff_id, chat_id) in
- *      <prefix>telegram_staff_links.
- *   6. From then on, the plugin's sendToAdmins() includes this chat_id
- *      in the recipient list (merged with the manual admin_chat_ids
- *      config — duplicates deduped).
+ * Renders inside the standard osTicket staff header / footer. Two views:
  *
- * The staff member never sees the chat_id. One click + Press Start.
+ *   - Not yet linked:    big button "🔗 Vincular Telegram" that POSTs back
+ *                        and triggers the 302 redirect to t.me/<bot>?start=<token>.
+ *   - Already linked:    badge with the linked chat_id + "Desvincular" button
+ *                        that calls back to remove the binding.
  *
  * @license GPL-2.0-or-later
  */
@@ -30,13 +20,12 @@
 require_once 'staff.inc.php';
 
 if (!$thisstaff || !$thisstaff->getId() || !$thisstaff->isValid()) {
-    // staff.inc.php normally handles this, but be defensive.
     Http::redirect('login.php');
     exit;
 }
 
+// Locate the plugin + side-load the active instance config.
 $plugin = null;
-$instance = null;
 try {
     $pm = new PluginManager();
     foreach ($pm->allInstalled() as $p) {
@@ -45,8 +34,7 @@ try {
             $plugin = $p;
             if (method_exists($p, 'getActiveInstances')) {
                 foreach ($p->getActiveInstances() as $inst) {
-                    $instance = $inst;
-                    $p->getConfig($inst); // side-load instance config
+                    $p->getConfig($inst);
                     break;
                 }
             }
@@ -57,23 +45,133 @@ try {
     error_log('[TelegramBot/link-staff] plugin lookup failed: ' . $e->getMessage());
 }
 
-if (!$plugin || !$instance) {
-    http_response_code(503);
-    echo 'Telegram linking is not available right now.';
+if (!$plugin) {
+    require_once STAFFINC_DIR . 'header.inc.php';
+    echo '<div class="error" style="padding:20px;">Telegram plugin not available right now.</div>';
+    require_once STAFFINC_DIR . 'footer.inc.php';
     exit;
 }
 
+$staffId = (int) $thisstaff->getId();
+$action  = isset($_POST['action']) ? $_POST['action'] : (isset($_GET['action']) ? $_GET['action'] : '');
+
+// ─── Action: start linking (generate token + redirect to t.me) ────────
+if ($action === 'link' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+    try {
+        $url = $plugin->generateStaffLinkUrl($staffId);
+    } catch (Exception $e) {
+        error_log('[TelegramBot/link-staff] generateStaffLinkUrl failed: ' . $e->getMessage());
+        $url = null;
+    }
+    if ($url && preg_match('#^https://t\.me/#', $url)) {
+        Http::redirect($url);
+        exit;
+    }
+    $errorMsg = 'Could not generate the Telegram linking URL. Please try again.';
+}
+
+// ─── Action: unlink ───────────────────────────────────────────────────
+if ($action === 'unlink' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+    try {
+        // Use reflection to access the private links() helper (it's the
+        // simplest cross-version-safe way to get at the link store).
+        $rm = new ReflectionMethod($plugin, 'links');
+        $rm->setAccessible(true);
+        $store = $rm->invoke($plugin);
+        $store->unlinkStaffById($staffId);
+        $okMsg = 'Telegram desvinculado. Ya no recibirás notificaciones de administrador aquí.';
+    } catch (Exception $e) {
+        error_log('[TelegramBot/link-staff] unlink failed: ' . $e->getMessage());
+        $errorMsg = 'Could not unlink. Please try again.';
+    }
+}
+
+// ─── Read current link status ────────────────────────────────────────
+$linkedChatId = null;
 try {
-    $url = $plugin->generateStaffLinkUrl($thisstaff->getId());
+    $rm = new ReflectionMethod($plugin, 'links');
+    $rm->setAccessible(true);
+    $store = $rm->invoke($plugin);
+    $linkedChatId = $store->chatIdForStaff($staffId);
 } catch (Exception $e) {
-    error_log('[TelegramBot/link-staff] generateStaffLinkUrl failed: ' . $e->getMessage());
-    $url = null;
+    error_log('[TelegramBot/link-staff] lookup failed: ' . $e->getMessage());
 }
 
-if (!$url || !preg_match('#^https://t\.me/#', $url)) {
-    http_response_code(500);
-    echo 'Could not generate the Telegram linking URL. Please try again later.';
-    exit;
-}
+$botUsername = '';
+try {
+    $cfg = $plugin->getConfig();
+    $botUsername = $cfg ? (string) $cfg->get('bot_username') : '';
+} catch (Exception $e) {}
 
-Http::redirect($url);
+if ($nav) {
+    $nav->setTabActive('dashboard');
+}
+require_once STAFFINC_DIR . 'header.inc.php';
+?>
+
+<h2><i class="icon-comment"></i> <?php echo __('Notificaciones por Telegram'); ?></h2>
+<div class="clear"></div>
+
+<?php if (!empty($okMsg)) { ?>
+  <div id="msg_notice"><?php echo Format::htmlchars($okMsg); ?></div>
+<?php } ?>
+<?php if (!empty($errorMsg)) { ?>
+  <div id="msg_error"><?php echo Format::htmlchars($errorMsg); ?></div>
+<?php } ?>
+
+<div class="row" style="margin-top:20px;">
+  <div class="span12">
+
+    <?php if ($linkedChatId): ?>
+      <div class="tip_box" style="border-left:4px solid #16a34a;padding:16px 18px;background:#f0fdf4;border-radius:6px;">
+        <p style="font-size:1.1em;margin:0 0 8px;">
+          <strong>✅ Tu Telegram está vinculado.</strong>
+        </p>
+        <p style="margin:0 0 16px;color:#555;">
+          Chat ID:
+          <code><?php echo Format::htmlchars(substr((string) $linkedChatId, 0, -4)
+                                                . '****'); ?></code>
+          &middot; Bot:
+          <?php if ($botUsername): ?>
+            <a href="https://t.me/<?php echo rawurlencode($botUsername); ?>" target="_blank"
+               rel="noopener">@<?php echo Format::htmlchars($botUsername); ?></a>
+          <?php else: ?>
+            <em>(sin configurar)</em>
+          <?php endif; ?>
+        </p>
+        <form method="POST" style="display:inline-block;">
+          <input type="hidden" name="action" value="unlink">
+          <button class="button" type="submit" style="background:#dc2626;color:#fff;border:none;padding:10px 18px;border-radius:6px;cursor:pointer;">
+            <i class="icon-unlink"></i> Desvincular Telegram
+          </button>
+        </form>
+      </div>
+
+    <?php else: ?>
+      <div class="tip_box" style="border-left:4px solid #2563eb;padding:16px 18px;background:#eff6ff;border-radius:6px;">
+        <p style="font-size:1.1em;margin:0 0 8px;">
+          <strong>📲 Recibe alertas de tickets directamente en tu Telegram.</strong>
+        </p>
+        <p style="margin:0 0 16px;color:#555;">
+          Al vincular tu cuenta, este bot te enviará un mensaje cada vez que
+          se cree un ticket nuevo, llegue una respuesta de un cliente, o cambie
+          el estado o asignación (según la configuración del plugin).
+          Sólo te toma un clic — no necesitas saber tu chat ID.
+        </p>
+        <form method="POST" style="display:inline-block;">
+          <input type="hidden" name="action" value="link">
+          <button class="button" type="submit" style="background:#2563eb;color:#fff;border:none;padding:10px 18px;border-radius:6px;cursor:pointer;font-size:1em;">
+            <i class="icon-link"></i> 🔗 Vincular mi Telegram
+          </button>
+        </form>
+        <p style="margin-top:12px;color:#666;font-size:0.9em;">
+          <em>El botón te abrirá Telegram con un mensaje pre-llenado. Presiona Start y listo.</em>
+        </p>
+      </div>
+    <?php endif; ?>
+
+  </div>
+</div>
+
+<?php
+require_once STAFFINC_DIR . 'footer.inc.php';
