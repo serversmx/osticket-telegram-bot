@@ -20,32 +20,39 @@ receive ticket notifications. Two methods, can run simultaneously.
    - Writes `(user_id, chat_id)` into `<prefix>telegram_links`.
    - Replies in Telegram: `✅ Your Telegram is now linked…`.
 
-### Wiring the button
+### Wiring the entry point — `link-telegram.php`
 
-osTicket doesn't have a per-user-profile button slot natively. Two
-practical approaches:
+Since v0.1.4 the plugin ships a ready-to-use redirect script:
+**`plugin/link-telegram.php.example`**. Copy it to the osTicket public
+root, then point your customer-facing UI at that URL.
 
-#### Approach 1 — Help-topic form custom field with a link
-
-Add a custom HTML/help-text field to the Contact Information form
-labeled "Link Telegram" with body like:
-
-```html
-<a href="https://t.me/<your-bot>?start={{linking_token}}">Click to link</a>
+```bash
+cp /path/to/osticket/include/plugins/telegram-bot/link-telegram.php.example \
+   /path/to/osticket/link-telegram.php
+chown <web-user>:<web-group> /path/to/osticket/link-telegram.php
+chmod 644 /path/to/osticket/link-telegram.php
 ```
 
-where `{{linking_token}}` is a placeholder a small Mu admin
-helper script swaps with a fresh token. This is the simplest path for v0.1.
+What the script does:
 
-#### Approach 2 — A standalone PHP page
+1. `require 'client.inc.php'` — bootstraps osTicket and enforces customer auth.
+2. Locates the active plugin instance via `PluginManager::allInstalled()`.
+3. Calls `$plugin->generateLinkUrl($thisclient->getId())` to mint a one-shot,
+   15-min-TTL token.
+4. `Http::redirect()` to `https://t.me/<bot>?start=<token>`.
 
-Drop a file at `include/plugins/telegram-bot/profile-link.php` (next to
-`webhook.php`) that calls `$plugin->generateLinkUrl($currentUserId)` and
-redirects to the resulting `t.me/...` URL. Add a link to it from your
-templates.
+From the customer's point of view this is **a single click**. They never
+see the chat_id and don't have to copy-paste anything.
 
-We ship a sample helper at `docs/samples/profile-link-button.php` for
-reference (TODO: included in a future release).
+### Surfacing the link in osTicket
+
+osTicket doesn't have a per-user-profile button slot natively, so you have
+a few ways to give customers a place to click:
+
+- **Recommended:** add the URL as the `hint` on the manual `telegram_chat_id`
+  form field. Customers see it the first time they open their profile.
+- Embed it in a help topic, knowledge base article, or canned response.
+- Link it from your portal's homepage / landing template.
 
 ### Token TTL
 

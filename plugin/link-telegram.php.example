@@ -1,0 +1,78 @@
+<?php
+/**
+ * Customer-facing entry point for Telegram account linking.
+ *
+ * Drop this file at the osTicket public root (NOT inside include/, which is
+ * Deny-from-all). Rename if you want a friendlier path:
+ *
+ *   cp plugin/link-telegram.php.example /path/to/osticket/link-telegram.php
+ *
+ * Flow:
+ *   1. Customer (logged in) hits https://your-osticket/link-telegram.php
+ *   2. We bootstrap osTicket via client.inc.php (also enforces auth).
+ *   3. We ask the plugin to mint a one-shot token + build the t.me deep link.
+ *   4. Redirect the browser to t.me/<bot>?start=<token>.
+ *   5. Customer presses Start in Telegram → bot's webhook receives /start
+ *      <token> → plugin consumes the token and persists the (user_id,
+ *      chat_id) mapping in <prefix>telegram_links.
+ *
+ * Failure modes (logged + HTTP error, no token exposed to the page body):
+ *   - Not logged in           → redirect to login.php
+ *   - Plugin not active       → HTTP 503 with a generic message
+ *   - Token generation failed → HTTP 500
+ *
+ * @license GPL-2.0-or-later
+ */
+
+require 'client.inc.php';
+
+if (!$thisclient || !$thisclient->getId()) {
+    // client.inc.php may already enforce auth, but belt-and-suspenders.
+    Http::redirect('login.php');
+    exit;
+}
+
+$plugin = null;
+$instance = null;
+try {
+    $pm = new PluginManager();
+    foreach ($pm->allInstalled() as $p) {
+        if (method_exists($p, 'getName')
+                && stripos($p->getName(), 'Telegram Bot Notifications') !== false) {
+            $plugin = $p;
+            if (method_exists($p, 'getActiveInstances')) {
+                foreach ($p->getActiveInstances() as $inst) {
+                    $instance = $inst;
+                    $p->getConfig($inst); // side-load instance config
+                    break;
+                }
+            }
+            break;
+        }
+    }
+} catch (Exception $e) {
+    error_log('[TelegramBot/link] plugin lookup failed: ' . $e->getMessage());
+}
+
+if (!$plugin || !$instance) {
+    http_response_code(503);
+    echo 'Telegram linking is not available right now. Please contact support.';
+    exit;
+}
+
+try {
+    $url = $plugin->generateLinkUrl($thisclient->getId());
+} catch (Exception $e) {
+    error_log('[TelegramBot/link] generateLinkUrl failed: ' . $e->getMessage());
+    $url = null;
+}
+
+if (!$url || !preg_match('#^https://t\.me/#', $url)) {
+    http_response_code(500);
+    echo 'Could not generate the Telegram linking URL. Please try again later.';
+    exit;
+}
+
+// Redirect to Telegram. The token is in the query string but it's one-shot,
+// short-TTL, and scoped to this user_id — exposure in the URL is acceptable.
+Http::redirect($url);

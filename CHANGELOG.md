@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-05-20
+
+### Added
+- **`plugin/link-telegram.php.example`** — a customer-facing redirect script intended for the osTicket public root. Closes the missing UX piece in the deep-link account-linking flow: previously the backend (`generateLinkUrl()`, the `<prefix>telegram_link_tokens` table, the webhook handler for `/start <token>`) was complete, but there was no obvious URL a customer could hit to actually trigger the flow. With this script deployed:
+  1. Customer (already logged in to osTicket) opens `https://<your-osticket>/link-telegram.php`.
+  2. The script bootstraps osTicket via `client.inc.php` (which also enforces auth — redirects to `login.php` if not logged in).
+  3. Looks up the active plugin instance, calls `generateLinkUrl($userId)` to mint a one-shot 15-minute TTL token, redirects the browser to `https://t.me/<bot>?start=<token>`.
+  4. Customer presses Start in Telegram → webhook fires → `(user_id, chat_id)` row in `<prefix>telegram_links`.
+  At no point does the customer see the chat_id or have to type anything — they click one link and press Start.
+- `docs/user-linking.md` updated with the install-the-redirect-file step and the recommended hint text to put on the manual `chat_id` form field so customers know to use the redirect.
+
+### Notes
+- The redirect script is provided as `*.example` so admins must opt-in by copying it to a public path of their choice (default suggestion: `<root>/link-telegram.php`). Same pattern as `webhook-proxy.php.example`.
+
 ## [0.1.3] - 2026-05-20
 
 ### Fixed
@@ -58,7 +72,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - All log levels go through `EvoLogRedactor` — chat_ids partially masked, message bodies truncated with length prefix, secrets replaced with `[REDACTED]`.
 - `SECURITY.md` documents threat model, webhook trust boundary, accepted risks, and responsible-disclosure channel.
 
-[Unreleased]: https://github.com/RenatoAscencio/osticket-telegram-bot/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/RenatoAscencio/osticket-telegram-bot/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/RenatoAscencio/osticket-telegram-bot/releases/tag/v0.1.4
 [0.1.3]: https://github.com/RenatoAscencio/osticket-telegram-bot/releases/tag/v0.1.3
 [0.1.2]: https://github.com/RenatoAscencio/osticket-telegram-bot/releases/tag/v0.1.2
 [0.1.1]: https://github.com/RenatoAscencio/osticket-telegram-bot/releases/tag/v0.1.1
