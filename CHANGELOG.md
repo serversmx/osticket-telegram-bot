@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-05-20
+
+### Fixed
+- **`scp/link-telegram.php` returned HTTP 500.** Root cause: the script assigned `$cfg = $plugin->getConfig()` to read `bot_username`, but `staff.inc.php` had already set `$cfg` as the global `OsticketConfig`. Shadowing the global with our `PluginConfig` made the subsequent `header.inc.php` call `$cfg->getAllowIframes()` against the wrong object → `Call to undefined method`. Renamed the local to `$pluginCfg`. Same defensive pattern applies in any plugin script that bootstraps via `client.inc.php` / `staff.inc.php` and reads its own config — never use `$cfg` as a local.
+
 ## [0.1.8] - 2026-05-20
 
 ### Added
@@ -123,7 +128,8 @@ After that, both entry points work:
 - All log levels go through `EvoLogRedactor` — chat_ids partially masked, message bodies truncated with length prefix, secrets replaced with `[REDACTED]`.
 - `SECURITY.md` documents threat model, webhook trust boundary, accepted risks, and responsible-disclosure channel.
 
-[Unreleased]: https://github.com/RenatoAscencio/osticket-telegram-bot/compare/v0.1.8...HEAD
+[Unreleased]: https://github.com/RenatoAscencio/osticket-telegram-bot/compare/v0.1.9...HEAD
+[0.1.9]: https://github.com/RenatoAscencio/osticket-telegram-bot/releases/tag/v0.1.9
 [0.1.8]: https://github.com/RenatoAscencio/osticket-telegram-bot/releases/tag/v0.1.8
 [0.1.7]: https://github.com/RenatoAscencio/osticket-telegram-bot/releases/tag/v0.1.7
 [0.1.6]: https://github.com/RenatoAscencio/osticket-telegram-bot/releases/tag/v0.1.6

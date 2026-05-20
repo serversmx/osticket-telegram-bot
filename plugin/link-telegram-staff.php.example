@@ -97,10 +97,14 @@ try {
     error_log('[TelegramBot/link-staff] lookup failed: ' . $e->getMessage());
 }
 
+// NOTE: do NOT use `$cfg` as a local variable name here — staff.inc.php
+// sets `$cfg` as the global OsticketConfig and header.inc.php will call
+// `$cfg->getAllowIframes()` on it. Shadowing the global with the plugin's
+// PluginConfig crashes the page render with a fatal.
 $botUsername = '';
 try {
-    $cfg = $plugin->getConfig();
-    $botUsername = $cfg ? (string) $cfg->get('bot_username') : '';
+    $pluginCfg = $plugin->getConfig();
+    $botUsername = $pluginCfg ? (string) $pluginCfg->get('bot_username') : '';
 } catch (Exception $e) {}
 
 if ($nav) {
