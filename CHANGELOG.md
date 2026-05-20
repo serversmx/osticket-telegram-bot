@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-05-20
+
+### Changed
+- **UX redesign of `link-telegram.php`.** Now uses a card-based layout with two distinct states. **Linked state**: green-accent status card with a check mark, status badge (`● ACTIVO`), metadata row (chat ID masked as `21••••••4650`, bot username link to t.me, "linked since" timestamp), primary "Abrir chat con el bot" button + secondary "Desvincular" with `onsubmit=confirm()`. **Unlinked state**: blue-accent card with a 3-step visual guide (👇 Vincular → 💬 Start en Telegram → ✅ Listo), big primary CTA, and a privacy reassurance line. Both states are followed by an info card listing exactly what notifications the staff will receive. Inline scoped CSS (`.tg-*` class prefix) to avoid clashing with osTicket styles. Responsive: steps collapse to single column under 640px.
+- **UX redesign of `apps.php`.** Card grid (auto-fill `minmax(280px, 1fr)`) instead of vertical list. Each card has a colored icon tile (gradient blue background), bold title, optional subtitle, and an "Abrir →" CTA that animates on hover (card lifts, left border slides in, arrow translates right). Auto-picks an emoji icon based on the plugin's `iconclass`/desc (Telegram → 💬, WhatsApp → 📱, mail → ✉️, generic → 🔧). **Empty state**: dashed-border placeholder with a 🧩 icon, friendly message, and a pointer to `Admin Panel → Manage → Plugins`. Footer note explains why an expected app might not be showing.
+
+### Defensive notes
+- Both pages explicitly avoid using `$cfg` as a local variable name (osTicket sets it as a global `OsticketConfig` and `header.inc.php` calls `$cfg->getAllowIframes()` on it — see v0.1.9 fix).
+
 ## [0.1.9] - 2026-05-20
 
 ### Fixed
@@ -128,7 +137,8 @@ After that, both entry points work:
 - All log levels go through `EvoLogRedactor` — chat_ids partially masked, message bodies truncated with length prefix, secrets replaced with `[REDACTED]`.
 - `SECURITY.md` documents threat model, webhook trust boundary, accepted risks, and responsible-disclosure channel.
 
-[Unreleased]: https://github.com/RenatoAscencio/osticket-telegram-bot/compare/v0.1.9...HEAD
+[Unreleased]: https://github.com/RenatoAscencio/osticket-telegram-bot/compare/v0.1.10...HEAD
+[0.1.10]: https://github.com/RenatoAscencio/osticket-telegram-bot/releases/tag/v0.1.10
 [0.1.9]: https://github.com/RenatoAscencio/osticket-telegram-bot/releases/tag/v0.1.9
 [0.1.8]: https://github.com/RenatoAscencio/osticket-telegram-bot/releases/tag/v0.1.8
 [0.1.7]: https://github.com/RenatoAscencio/osticket-telegram-bot/releases/tag/v0.1.7
