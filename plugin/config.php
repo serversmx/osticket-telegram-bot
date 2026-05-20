@@ -227,15 +227,15 @@ class TelegramBotNotificationsPluginConfig extends PluginConfig {
             // ─── Formatting ──────────────────────────────────────────────────
             'sec_format' => new SectionBreakField(array(
                 'label' => '✉️  Message formatting',
-                'hint'  => 'Telegram supports MarkdownV2 (preferred — more flexible) or HTML. Variable values from osTicket are automatically escaped for the selected parse mode. Templates below use {{var}} and {{var|fallback}} placeholders.',
+                'hint'  => 'Telegram supports HTML (recommended — forgiving with punctuation like dots and dashes) or MarkdownV2 (strict — every reserved char must be escaped, even literal `.` `-` `!` etc.). Variable values from osTicket are automatically escaped for the chosen mode. Templates below use {{var}} and {{var|fallback}} placeholders.',
             )),
 
             'parse_mode' => new ChoiceField(array(
                 'label'   => 'Parse mode',
-                'default' => 'MarkdownV2',
+                'default' => 'HTML',
                 'choices' => array(
-                    'MarkdownV2' => 'MarkdownV2 (recommended)',
-                    'HTML'       => 'HTML',
+                    'HTML'       => 'HTML (recommended)',
+                    'MarkdownV2' => 'MarkdownV2 (advanced — escape every reserved char in your templates manually)',
                     ''           => 'Plain text (no formatting)',
                 ),
             )),
@@ -257,47 +257,47 @@ class TelegramBotNotificationsPluginConfig extends PluginConfig {
             // ─── Templates ───────────────────────────────────────────────────
             'sec_templates' => new SectionBreakField(array(
                 'label' => '📝  Message templates',
-                'hint'  => 'Placeholders: {{ticket_number}} {{subject}} {{name}} {{email}} {{department}} {{priority}} {{status}} {{assignee}} {{poster_type}} {{message}} {{ticket_link}}. For MarkdownV2 use *bold* _italic_ `code` [text](url). Variable values are auto-escaped — write your template assuming you can use raw markdown for static text.',
+                'hint'  => 'Placeholders: {{ticket_number}} {{subject}} {{name}} {{email}} {{department}} {{priority}} {{status}} {{assignee}} {{poster_type}} {{message}} {{ticket_link}}. HTML tags supported by Telegram: <b>bold</b>, <i>italic</i>, <u>underline</u>, <s>strike</s>, <code>code</code>, <a href="https://example.com">link</a>. Variable values are auto-escaped (&lt;, &gt;, &amp;).',
             )),
 
             'tpl_client_created' => new TextareaField(array(
                 'label'   => 'To customer — ticket created',
-                'default' => "Hi {{name}}, we received your ticket *#{{ticket_number}}*\n_{{subject}}_\n\nAn agent will get back to you shortly.",
+                'default' => "Hello <b>{{name}}</b>, we received your ticket <b>#{{ticket_number}}</b>\n<i>{{subject}}</i>\n\nAn agent will get back to you shortly.",
                 'configuration' => self::plainTextarea(6, 60),
             )),
             'tpl_client_staff_reply' => new TextareaField(array(
                 'label'   => 'To customer — staff replied',
-                'default' => "Hi {{name}}, there's a new reply on ticket *#{{ticket_number}}*:\n\n{{message}}",
+                'default' => "Hello <b>{{name}}</b>, there's a new reply on ticket <b>#{{ticket_number}}</b>:\n\n{{message}}",
                 'configuration' => self::plainTextarea(6, 60),
             )),
             'tpl_client_status' => new TextareaField(array(
                 'label'   => 'To customer — status changed',
-                'default' => "Ticket *#{{ticket_number}}* status changed to *{{status}}*.",
+                'default' => "Ticket <b>#{{ticket_number}}</b> status changed to <b>{{status}}</b>.",
                 'configuration' => self::plainTextarea(4, 60),
             )),
             'tpl_admin_created' => new TextareaField(array(
                 'label'   => 'To admin — ticket created',
-                'default' => "*New ticket #{{ticket_number}}*\n*Subject:* {{subject}}\n*From:* {{name}} ({{email}})\n*Department:* {{department}}\n*Priority:* {{priority}}\n\n{{message}}",
+                'default' => "<b>New ticket #{{ticket_number}}</b>\n<b>Subject:</b> {{subject}}\n<b>From:</b> {{name}} ({{email}})\n<b>Department:</b> {{department}}\n<b>Priority:</b> {{priority}}\n\n{{message}}",
                 'configuration' => self::plainTextarea(8, 60),
             )),
             'tpl_admin_user_reply' => new TextareaField(array(
                 'label'   => 'To admin — customer replied',
-                'default' => "*Reply on ticket #{{ticket_number}}*\n*From customer:* {{name}}\n\n{{message}}",
+                'default' => "<b>Reply on ticket #{{ticket_number}}</b>\n<b>From customer:</b> {{name}}\n\n{{message}}",
                 'configuration' => self::plainTextarea(6, 60),
             )),
             'tpl_admin_staff_reply' => new TextareaField(array(
                 'label'   => 'To admin — staff replied',
-                'default' => "*Staff reply on ticket #{{ticket_number}}*\n*By:* {{name}}\n\n{{message}}",
+                'default' => "<b>Staff reply on ticket #{{ticket_number}}</b>\n<b>By:</b> {{name}}\n\n{{message}}",
                 'configuration' => self::plainTextarea(6, 60),
             )),
             'tpl_admin_status' => new TextareaField(array(
                 'label'   => 'To admin — status changed',
-                'default' => "Ticket *#{{ticket_number}}* → *{{status}}* (assignee: {{assignee|—}})",
+                'default' => "Ticket <b>#{{ticket_number}}</b> → <b>{{status}}</b> (assignee: {{assignee|—}})",
                 'configuration' => self::plainTextarea(4, 60),
             )),
             'tpl_admin_assignment' => new TextareaField(array(
                 'label'   => 'To admin — assignment changed',
-                'default' => "Ticket *#{{ticket_number}}* assigned to *{{assignee}}*.",
+                'default' => "Ticket <b>#{{ticket_number}}</b> assigned to <b>{{assignee}}</b>.",
                 'configuration' => self::plainTextarea(4, 60),
             )),
 
