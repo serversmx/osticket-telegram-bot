@@ -220,7 +220,7 @@ class TelegramBotClient {
         ));
 
         // Log without the body (body contains chat_id, text, token in URL).
-        // The plugin-side log() will pass this through EvoLogRedactor.
+        // The plugin-side log() will pass this through TgLogRedactor.
         $this->log('debug', 'tg:' . $method, array(
             'method' => $method,
             'payload' => $payload,

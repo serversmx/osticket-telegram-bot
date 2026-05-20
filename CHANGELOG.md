@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-05-19
+
+### Fixed
+- **Class-name collision with `osticket-evolution-api` caused a white page when admin tried to enable the plugin.** Both plugins bundled identically-named lib classes (`EvoSentryReporter`, `EvoLogRedactor`), so the second to load triggered a fatal `Cannot declare class X, because the name is already in use`. Renamed Telegram's copies to `TgSentryReporter` / `TgLogRedactor`. Each plugin now owns its own namespace-distinct copies and both can be enabled simultaneously on the same osTicket install.
+
+### Internal
+- All references in `telegram.php`, `lib/TelegramBotClient.php`, and the three affected test files updated to the new names.
+- Tests still pass (81/81 assertions across 5 files).
+
 ## [0.1.1] - 2026-05-19
 
 ### Fixed
@@ -40,6 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - All log levels go through `EvoLogRedactor` — chat_ids partially masked, message bodies truncated with length prefix, secrets replaced with `[REDACTED]`.
 - `SECURITY.md` documents threat model, webhook trust boundary, accepted risks, and responsible-disclosure channel.
 
-[Unreleased]: https://github.com/RenatoAscencio/osticket-telegram-bot/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/RenatoAscencio/osticket-telegram-bot/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/RenatoAscencio/osticket-telegram-bot/releases/tag/v0.1.2
 [0.1.1]: https://github.com/RenatoAscencio/osticket-telegram-bot/releases/tag/v0.1.1
 [0.1.0]: https://github.com/RenatoAscencio/osticket-telegram-bot/releases/tag/v0.1.0

@@ -1,6 +1,6 @@
 <?php
 /**
- * Telegram-specific tests for EvoLogRedactor — covers the additional keys
+ * Telegram-specific tests for TgLogRedactor — covers the additional keys
  * this plugin contributes (chat_id, bot_token, secret_token, etc.).
  *
  * Run: php tests/LogRedactorTelegramKeysTest.php
@@ -45,33 +45,33 @@ class LogRedactorTelegramKeysTest {
     }
 
     private function test_chat_id_masked() {
-        $out = EvoLogRedactor::context(array('chat_id' => '1234567890'));
+        $out = TgLogRedactor::context(array('chat_id' => '1234567890'));
         $this->assertSame('******7890', $out['chat_id'], 'chat_id masked to last-4');
     }
 
     private function test_chat_ids_masked() {
-        $out = EvoLogRedactor::context(array('chat_ids' => array('1234567890', '987654321')));
+        $out = TgLogRedactor::context(array('chat_ids' => array('1234567890', '987654321')));
         $this->assertSame(array('******7890', '*****4321'), $out['chat_ids'], 'chat_ids list masked');
     }
 
     private function test_negative_group_chat_id_masked() {
-        $out = EvoLogRedactor::context(array('chat_id' => '-1001234567890'));
+        $out = TgLogRedactor::context(array('chat_id' => '-1001234567890'));
         // 14 chars total — keep last 4.
         $this->assertSame('**********7890', $out['chat_id'], 'negative group chat_id masked');
     }
 
     private function test_bot_token_redacted() {
-        $out = EvoLogRedactor::context(array('bot_token' => '123456789:AAEXAMPLE'));
+        $out = TgLogRedactor::context(array('bot_token' => '123456789:AAEXAMPLE'));
         $this->assertSame('[REDACTED]', $out['bot_token'], 'bot_token redacted');
     }
 
     private function test_secret_token_redacted() {
-        $out = EvoLogRedactor::context(array('secret_token' => 'sometopsecret'));
+        $out = TgLogRedactor::context(array('secret_token' => 'sometopsecret'));
         $this->assertSame('[REDACTED]', $out['secret_token'], 'secret_token redacted');
     }
 
     private function test_webhook_secret_token_redacted() {
-        $out = EvoLogRedactor::context(array('webhook_secret_token' => 'abc123def456'));
+        $out = TgLogRedactor::context(array('webhook_secret_token' => 'abc123def456'));
         $this->assertSame('[REDACTED]', $out['webhook_secret_token'], 'webhook_secret_token redacted');
     }
 
@@ -85,7 +85,7 @@ class LogRedactorTelegramKeysTest {
             ),
             'bot_token' => '123456789:AAEX',
         );
-        $out = EvoLogRedactor::context($in);
+        $out = TgLogRedactor::context($in);
         $this->assertSame('sendMessage', $out['method'], 'method preserved');
         $this->assertSame('MarkdownV2', $out['payload']['parse_mode'], 'parse_mode preserved');
         $this->assertSame('[REDACTED]', $out['bot_token'], 'bot_token redacted');

@@ -7,11 +7,11 @@
  * with `[REDACTED]`.
  *
  * Extracted into its own class so it can be unit-tested without booting
- * osTicket. The main plugin class delegates to `EvoLogRedactor::context()`.
+ * osTicket. The main plugin class delegates to `TgLogRedactor::context()`.
  *
  * @license GPL-2.0-or-later
  */
-class EvoLogRedactor {
+class TgLogRedactor {
 
     /** Keys whose values look like phone numbers OR Telegram chat IDs. */
     private static $PHONE_KEYS = array('phone', 'number', 'numbers', 'mentioned', 'chat_id', 'chat_ids');

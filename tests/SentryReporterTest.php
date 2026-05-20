@@ -1,6 +1,6 @@
 <?php
 /**
- * Tests for EvoSentryReporter — DSN parsing and no-op behavior when disabled.
+ * Tests for TgSentryReporter — DSN parsing and no-op behavior when disabled.
  * Run: php tests/SentryReporterTest.php
  */
 
@@ -49,48 +49,48 @@ class SentryReporterTest {
     private function assertNull($v, $msg)     { $this->assertSame(null,  $v,    $msg); }
 
     private function test_disabled_when_no_dsn() {
-        $r = new EvoSentryReporter();
+        $r = new TgSentryReporter();
         $this->assertFalse($r->isEnabled(), 'no DSN → disabled');
     }
 
     private function test_disabled_when_dsn_is_empty() {
-        $r = new EvoSentryReporter('');
+        $r = new TgSentryReporter('');
         $this->assertFalse($r->isEnabled(), 'empty DSN → disabled');
     }
 
     private function test_invalid_dsn_no_project_id() {
-        $r = new EvoSentryReporter('https://key@host');
+        $r = new TgSentryReporter('https://key@host');
         $this->assertFalse($r->isEnabled(), 'DSN without /project_id → disabled');
     }
 
     private function test_invalid_dsn_no_at_sign() {
-        $r = new EvoSentryReporter('https://nohost/123');
+        $r = new TgSentryReporter('https://nohost/123');
         $this->assertFalse($r->isEnabled(), 'DSN without key@ → disabled');
     }
 
     private function test_invalid_dsn_non_numeric_project_id() {
-        $r = new EvoSentryReporter('https://key@host/notdigits');
+        $r = new TgSentryReporter('https://key@host/notdigits');
         $this->assertFalse($r->isEnabled(), 'DSN with non-numeric project id → disabled');
     }
 
     private function test_valid_dsn_enables_reporter() {
-        $r = new EvoSentryReporter('https://abc123def456@o0.ingest.sentry.io/4567890');
+        $r = new TgSentryReporter('https://abc123def456@o0.ingest.sentry.io/4567890');
         $this->assertTrue($r->isEnabled(), 'valid DSN → enabled');
     }
 
     private function test_capture_message_returns_null_when_disabled() {
-        $r = new EvoSentryReporter();
+        $r = new TgSentryReporter();
         $this->assertNull($r->captureMessage('test'), 'captureMessage returns null when disabled');
     }
 
     private function test_capture_exception_returns_null_when_disabled() {
-        $r = new EvoSentryReporter();
+        $r = new TgSentryReporter();
         $e = new Exception('boom');
         $this->assertNull($r->captureException($e), 'captureException returns null when disabled');
     }
 
     private function test_tags_and_extras_persist_across_calls() {
-        $r = new EvoSentryReporter();  // disabled, but state should still track.
+        $r = new TgSentryReporter();  // disabled, but state should still track.
         $r->addTag('plugin', 'test');
         $r->addExtra('extra_key', 'extra_value');
         $r->setEnvironment('staging');

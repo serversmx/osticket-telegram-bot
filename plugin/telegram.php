@@ -24,7 +24,7 @@ class TelegramBotNotificationsPlugin extends Plugin {
     private $api;
     /** @var TgUserLinkStore */
     private $links;
-    /** @var EvoSentryReporter */
+    /** @var TgSentryReporter */
     private $sentry;
     /** @var array<string,bool> per-(ticket,kind) request dedup */
     private $sentInRequest = array();
@@ -34,7 +34,7 @@ class TelegramBotNotificationsPlugin extends Plugin {
     function bootstrap() {
         $cfg = $this->getConfig();
 
-        $this->sentry = new EvoSentryReporter($cfg->get('sentry_dsn'));
+        $this->sentry = new TgSentryReporter($cfg->get('sentry_dsn'));
         $this->sentry->setEnvironment($cfg->get('sentry_environment') ?: 'production');
         $this->sentry->addTag('plugin', 'telegram-bot-notifications');
 
@@ -762,7 +762,7 @@ class TelegramBotNotificationsPlugin extends Plugin {
         }
         $line = '[TelegramBotNotifications][' . strtoupper($level) . '] ' . $msg;
         if (!empty($ctx)) {
-            $line .= ' ' . json_encode(EvoLogRedactor::context($ctx));
+            $line .= ' ' . json_encode(TgLogRedactor::context($ctx));
         }
         error_log($line);
     }

@@ -17,7 +17,7 @@
  * @license GPL-2.0-or-later
  * @link    https://develop.sentry.dev/sdk/event-payloads/
  */
-class EvoSentryReporter {
+class TgSentryReporter {
 
     /** @var string|null */
     private $dsn;
