@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-05-21
+
+### Added
+- **Automatic post-ticket invitation email.** After `ticket.created`, if the customer's user record has no linked Telegram chat, the plugin sends them a one-shot deep-link by email (`Mailer::sendmail`). Works the same for logged-in customers and walk-in visitors — osTicket always creates a `User` from the ticket form, so we always have a valid email + user_id to mint a token against. Opt-out: send `/unlink` to the bot. Toggle `send_link_offer_email` in the **Vinculación clientes** tab.
+- **5th admin tab "Vinculación clientes"** in `/scp/link-telegram.php`. Manages the invitation email toggle and link-token TTL.
+
+### Changed
+- **Plugin admin form is instance-only.** `config.php` shrunk from ~400 to 215 lines. Recipients, customer opt-in / linking flow, per-event matrix, parse mode, templates, inline buttons, and pacing all moved to `/scp/link-telegram.php` (5 admin tabs: Notificaciones, Vinculación clientes, Plantillas, Formato + the "Mi vinculación" tab visible to every staff). New `TelegramBotNotificationsPlugin::prefDefaults()` + `pref($key)` helper provide fallbacks for the moved keys so a fresh install works with no setup. The plugin admin page is now small: 🤖 Bot — 🌐 Webhook — 🛡️ Sentry — 🐛 Debug.
+
+### Removed
+- **`telegram_chat_id` / `telegram_opt_in` Contact Information form fields are no longer consumed.** The plugin no longer reads custom user-form fields. Customer linking is *only* via the bot deep-link. Removed `respect_user_opt_in`, `allow_deeplink_linking`, `allow_manual_chat_id`, `manual_chat_id_field_variable`, `opt_in_field_variable`, `opt_in_default_when_absent` config keys and the `userOptedIn` / `readUserCustomField` / `extractFieldFromEntry` / `coerceBool` helpers. Upgrade note: remove those fields from your Contact Information form, they're inert now.
+
+### Fixed
+- **Blank textareas in Templates and Format tabs on fresh installs.** The tab read templates via `$pluginCfg->get('tpl_*')` as fallback, but `config.php` no longer declares those fields → `null` → empty textareas. Now the tabs fall back to `TelegramBotNotificationsPlugin::prefDefaults()` for any missing key.
+- **`/scp/link-telegram.php` rendered tabs but blank content below.** osTicket's `include/staff/templates/navigation.tmpl.php` does `foreach($tabs as $name => $tab)` inside `header.inc.php`, clobbering any `$tab` in the calling scope. After the header ran, our `$tab === 'link'` check evaluated false because `$tab` was now the last nav tab array. Renamed the local to `$activeTab`.
+
+## [0.1.11] - 2026-05-20
+
 ### Changed
 - **Theme-agnostic CSS** for both staff pages (`link-telegram.php`, `apps.php`). Previously they hard-coded light-theme colors (`#fff`, `#0f172a`, `#64748b`, etc.) and a 880–980px `max-width` container, which looked off on custom-branded themes (e.g. the green one currently active on tickets.tvplus.mx). Now:
   - `width: 100%` instead of fixed `max-width` — content fills whatever container osTicket's active theme provides.

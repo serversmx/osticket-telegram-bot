@@ -49,20 +49,17 @@ class TelegramBotNotificationsPlugin extends Plugin {
      *
      * Keys mirror exactly what link-telegram.php saves.
      */
-    private static function prefDefaults() {
+    public static function prefDefaults() {
         return array(
             // Recipients
             'notify_clients'                => '1',
             'notify_admins'                 => '1',
             'admin_chat_ids'                => '',
-            // Linking / opt-in
-            'allow_deeplink_linking'        => '1',
-            'allow_manual_chat_id'          => '1',
-            'manual_chat_id_field_variable' => 'telegram_chat_id',
-            'respect_user_opt_in'           => '1',
-            'opt_in_field_variable'         => 'telegram_opt_in',
-            'opt_in_default_when_absent'    => '1',
+            // Linking — deep-link is the only supported flow. Customers
+            // who don't have a linked chat get an opt-in email after their
+            // ticket is created (see emailLinkOffer below). Opt-out = /unlink.
             'link_token_ttl'                => '900',
+            'send_link_offer_email'         => '1',
             // Event matrix
             'evt_ticket_created__client'    => '1',
             'evt_ticket_created__admin'     => '1',
@@ -331,8 +328,74 @@ class TelegramBotNotificationsPlugin extends Plugin {
             if ($this->adminShouldFire('evt_ticket_created')) {
                 $this->sendToAdmins($this->pref('tpl_admin_created'), $vars, $this->buildKeyboard($ticket, true));
             }
+            // Customer has no linked Telegram yet → email them an invitation
+            // with a one-shot deep-link token. Works for both logged-in
+            // customers and walk-in visitors: osTicket always has a User
+            // record by ticket creation time, and we email to the User's
+            // address (no session required).
+            if ($this->pref('notify_clients')
+                    && $this->pref('send_link_offer_email')
+                    && $this->resolveClientChatId($ticket) === null) {
+                $this->emailLinkOffer($ticket);
+            }
         } catch (Exception $e) {
             $this->report($e, array('event' => 'ticket.created'));
+        }
+    }
+
+    /**
+     * Email the ticket owner a Telegram deep-link so they can opt-in to
+     * notifications. Skips silently if we can't determine an email address
+     * or if the bot isn't configured.
+     */
+    private function emailLinkOffer(Ticket $ticket) {
+        $owner = method_exists($ticket, 'getOwner') ? $ticket->getOwner() : null;
+        if (!$owner) { return; }
+        $userId = method_exists($owner, 'getId') ? (int) $owner->getId() : 0;
+        if (!$userId) { return; }
+
+        $email = '';
+        try { $email = (string) $ticket->getEmail(); } catch (Exception $e) {}
+        if ($email === '' && method_exists($owner, 'getEmail')) {
+            try { $email = (string) $owner->getEmail(); } catch (Exception $e) {}
+        }
+        if (!$email || !preg_match('/^[^\s@]+@[^\s@]+$/', $email)) { return; }
+
+        $url = $this->generateLinkUrl($userId);
+        if (!$url) { return; }
+
+        $name = '';
+        try { $name = (string) $ticket->getName(); } catch (Exception $e) {}
+        if ($name === '' && method_exists($owner, 'getName')) {
+            try { $name = (string) $owner->getName(); } catch (Exception $e) {}
+        }
+        $hello   = $name !== '' ? Format::htmlchars($name) : 'Hola';
+        $number  = Format::htmlchars((string) $ticket->getNumber());
+        $urlSafe = Format::htmlchars($url);
+
+        $subject = 'Vincula tu Telegram para recibir actualizaciones de tu ticket #' . $number;
+        $body = '<p>' . $hello . ',</p>'
+              . '<p>Hemos recibido tu ticket <b>#' . $number . '</b>. Si quieres recibir actualizaciones '
+              . 'directamente en Telegram (más rápido que el correo), vincula tu cuenta con un clic:</p>'
+              . '<p style="margin:18px 0;"><a href="' . $urlSafe . '" '
+              . 'style="display:inline-block;padding:10px 18px;background:#2563eb;color:#fff;'
+              . 'text-decoration:none;border-radius:6px;font-weight:600;">Vincular mi Telegram</a></p>'
+              . '<p style="font-size:0.9em;color:#666;">El enlace se abre en la app de Telegram y solo es válido '
+              . 'una vez. Si prefieres seguir recibiendo todo por email, ignora este mensaje. '
+              . 'Para desvincular más adelante, envía <code>/unlink</code> al bot.</p>';
+
+        try {
+            // osTicket 1.18+ namespaces Mailer under osTicket\Mail. Use the
+            // FQCN to avoid autoload trouble at signal-handler time.
+            \osTicket\Mail\Mailer::sendmail($email, $subject, $body, null, array(
+                'from_name' => 'Soporte',
+            ));
+            $this->log('info', 'Sent Telegram link-offer email', array(
+                'ticket' => $number,
+                'email'  => $email,
+            ));
+        } catch (Exception $e) {
+            $this->report($e, array('event' => 'link-offer-email'));
         }
     }
 
@@ -412,15 +475,8 @@ class TelegramBotNotificationsPlugin extends Plugin {
     // ─── Senders ─────────────────────────────────────────────────────────
 
     private function sendToClient(Ticket $ticket, $template, array $vars, $forAdmin = false) {
-        // Honor opt-in.
-        if ($this->pref('respect_user_opt_in')) {
-            $optIn = $this->userOptedIn($ticket);
-            if ($optIn === false) {
-                $this->log('info', 'Customer opted out — skipping ticket #' . $vars['ticket_number']);
-                return;
-            }
-        }
-
+        // No opt-in field check: linking IS opt-in. Customer can /unlink
+        // anytime to stop notifications.
         $chatId = $this->resolveClientChatId($ticket);
         if (!$chatId) {
             $this->log('debug', 'No linked Telegram chat for ticket #' . $vars['ticket_number']);
@@ -632,130 +688,21 @@ class TelegramBotNotificationsPlugin extends Plugin {
 
     // ─── Resolve client chat_id ──────────────────────────────────────────
 
+    /**
+     * Resolve the customer's Telegram chat_id from the deep-link store.
+     * Returns null when the customer hasn't linked yet — callers should
+     * trigger emailLinkOffer() so the customer gets the invitation.
+     */
     private function resolveClientChatId(Ticket $ticket) {
         try {
             $owner = method_exists($ticket, 'getOwner') ? $ticket->getOwner() : null;
             if (!$owner) { return null; }
             $userId = method_exists($owner, 'getId') ? (int) $owner->getId() : 0;
-
-            // Strategy 1: deep-link store.
-            if ($this->pref('allow_deeplink_linking') && $userId) {
-                $chat = $this->links()->chatIdForUser($userId);
-                if ($chat) { return $chat; }
-            }
-            // Strategy 2: manual field on user profile.
-            if ($this->pref('allow_manual_chat_id')) {
-                $var = trim((string) $this->pref('manual_chat_id_field_variable'));
-                if ($var !== '') {
-                    $v = $this->readUserCustomField($owner, $var);
-                    if ($v !== null && $v !== '' && !is_array($v)) {
-                        $digits = preg_replace('/[^0-9-]/', '', (string) $v);
-                        if ($digits !== '' && preg_match('/^-?\d{4,20}$/', $digits)) {
-                            return $digits;
-                        }
-                    }
-                }
-            }
-        } catch (Exception $e) {}
-        return null;
-    }
-
-    // ─── Opt-in (mirrors Evolution plugin) ───────────────────────────────
-
-    private function userOptedIn(Ticket $ticket) {
-        $variable = trim((string) $this->pref('opt_in_field_variable'));
-        if ($variable === '') { $variable = 'telegram_opt_in'; }
-        $defaultWhenAbsent = (bool) $this->pref('opt_in_default_when_absent');
-
-        try {
-            $owner = method_exists($ticket, 'getOwner') ? $ticket->getOwner() : null;
-            if (!$owner) {
-                return $defaultWhenAbsent ? null : false;
-            }
-            $value = $this->readUserCustomField($owner, $variable);
-            if ($value === null) {
-                return $defaultWhenAbsent ? null : false;
-            }
-            return $this->coerceBool($value);
+            if (!$userId) { return null; }
+            return $this->links()->chatIdForUser($userId);
         } catch (Exception $e) {
             return null;
         }
-    }
-
-    private function readUserCustomField($user, $variable) {
-        if (method_exists($user, 'getForms')) {
-            try {
-                $forms = $user->getForms();
-                if ($forms) {
-                    foreach ($forms as $entry) {
-                        $v = $this->extractFieldFromEntry($entry, $variable);
-                        if ($v !== null) { return $v; }
-                    }
-                }
-            } catch (Exception $e) {}
-        }
-        if (method_exists($user, 'getDynamicData')) {
-            try {
-                $entries = $user->getDynamicData();
-                if ($entries) {
-                    foreach ($entries as $entry) {
-                        $v = $this->extractFieldFromEntry($entry, $variable);
-                        if ($v !== null) { return $v; }
-                    }
-                }
-            } catch (Exception $e) {}
-        }
-        if (method_exists($user, 'getInfo')) {
-            try {
-                $info = $user->getInfo();
-                if (is_array($info) && array_key_exists($variable, $info)) {
-                    return $info[$variable];
-                }
-            } catch (Exception $e) {}
-        }
-        return null;
-    }
-
-    private function extractFieldFromEntry($entry, $variable) {
-        if (!is_object($entry)) { return null; }
-        if (method_exists($entry, 'getField')) {
-            try {
-                $field = $entry->getField($variable);
-                if ($field && method_exists($field, 'getClean')) {
-                    return $field->getClean();
-                }
-                if ($field && method_exists($field, 'getValue')) {
-                    return $field->getValue();
-                }
-            } catch (Exception $e) {}
-        }
-        if (method_exists($entry, 'getAnswers')) {
-            try {
-                foreach ($entry->getAnswers() as $answer) {
-                    if (!is_object($answer)) { continue; }
-                    $field = method_exists($answer, 'getField') ? $answer->getField() : null;
-                    $name = $field && method_exists($field, 'get') ? $field->get('name') : null;
-                    if ($name === $variable) {
-                        if (method_exists($answer, 'getValue')) {
-                            return $answer->getValue();
-                        }
-                    }
-                }
-            } catch (Exception $e) {}
-        }
-        return null;
-    }
-
-    private function coerceBool($value) {
-        if (is_bool($value)) { return $value; }
-        if (is_numeric($value)) { return ((int) $value) !== 0; }
-        if (is_string($value)) {
-            $v = strtolower(trim($value));
-            if ($v === '' || $v === '0' || $v === 'false' || $v === 'no' || $v === 'off') { return false; }
-            return true;
-        }
-        if (is_array($value)) { return !empty($value); }
-        return (bool) $value;
     }
 
     // ─── Template vars + escaping ────────────────────────────────────────

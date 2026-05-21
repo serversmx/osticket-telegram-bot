@@ -14,8 +14,9 @@ Designed as a sibling to [`osticket-evolution-api`](https://github.com/RenatoAsc
 
 ## Features
 
-- **Bot deep-link linking.** Customer clicks "Link Telegram" on their osTicket profile → opens `https://t.me/<your-bot>?start=<token>` → bot replies "Linked!" within a second. No manual chat_id pasting.
-- **Manual fallback.** Customers (or admins, on their behalf) can still paste a `chat_id` into a custom user-form field. Works without configuring a webhook.
+- **Bot deep-link linking.** Customer clicks "Link Telegram" → opens `https://t.me/<your-bot>?start=<token>` → bot replies "Linked!" within a second. No manual chat_id pasting, no custom form fields.
+- **Automatic post-ticket invitation email.** After a customer (logged-in *or* visitor) creates a ticket, if their Telegram isn't linked yet, the plugin emails them a one-shot deep-link to opt in. Opting out = sending `/unlink` to the bot. Toggle from the **Vinculación clientes** tab.
+- **Two-surface configuration.** Plugin admin form only manages *instance* settings (bot creds, webhook, Sentry, debug). All notification preferences (recipients, events, templates, format, buttons, linking) live in the staff page `/scp/link-telegram.php` and update in real time.
 - **Inline keyboards on every message** (optional). "View ticket" button for customers; "View ticket" + "Reply" for admins. Configurable labels.
 - **Per-event × per-audience matrix.** Eight independent toggles:
   - Ticket created → customer / admin
@@ -23,13 +24,14 @@ Designed as a sibling to [`osticket-evolution-api`](https://github.com/RenatoAsc
   - Staff reply → customer / admin
   - Status changed → customer / admin
   - Assignment changed → admin
-- **Three parse modes:** MarkdownV2 (recommended, automatic escaping of variable values), HTML, or plain text.
-- **Customer opt-in** via a `telegram_opt_in` checkbox on the Contact Information form.
+- **Three parse modes:** HTML (default, forgiving with punctuation), MarkdownV2 (strict — every reserved char escaped), or plain text.
 - **HTTP retries** on 429 / 5xx / network errors with exponential backoff. Honors Telegram's `parameters.retry_after` and HTTP `Retry-After`.
 - **Webhook endpoint** processes `/start`, `/unlink`, `/status`. Secured with the `X-Telegram-Bot-Api-Secret-Token` header.
 - **Credentials masked in UI** (`PasswordField` for bot token, webhook secret, Sentry DSN).
 - **PII redaction in logs** (chat IDs partially masked, message bodies truncated, secrets redacted).
 - **Optional Sentry integration** via the same lightweight envelope client as the Evolution plugin (no Composer required).
+
+> **Upgrading from 0.1.x?** The `telegram_chat_id` and `telegram_opt_in` form fields on the Contact Information form are no longer used — remove them. The new flow auto-invites customers by email after they create a ticket; no extra setup.
 
 ---
 
