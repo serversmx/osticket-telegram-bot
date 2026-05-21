@@ -244,6 +244,14 @@ class TelegramBotNotificationsPlugin extends Plugin {
                 case 'status':
                     $this->handleStatus($chatId);
                     break;
+                case 'whoami':
+                case 'id':
+                case 'chatid':
+                    $this->handleWhoami($chatId);
+                    break;
+                case 'help':
+                    $this->handleHelp($chatId);
+                    break;
                 default:
                     // Ignore unknown commands silently.
                     break;
@@ -559,7 +567,11 @@ class TelegramBotNotificationsPlugin extends Plugin {
     private function handleStart($chatId, $arg) {
         // /start without an arg → bot greeting.
         if (!$arg) {
-            $this->reply($chatId, 'Hi! Use the "Link Telegram" button on your osTicket profile to connect your account.');
+            $msg  = "¡Hola! Soy el bot de notificaciones de soporte.\n\n";
+            $msg .= "Para vincular este chat con tu cuenta, abre el botón \"Vincular Telegram\" en tu correo de creación de ticket o en tu perfil.\n\n";
+            $msg .= "Tu chat_id es: " . $chatId . "\n\n";
+            $msg .= "Envía /help para ver todos los comandos.";
+            $this->reply($chatId, $msg);
             return;
         }
 
@@ -569,7 +581,7 @@ class TelegramBotNotificationsPlugin extends Plugin {
         if ($userId !== null) {
             $this->links()->link($userId, $chatId);
             $this->log('info', 'Linked user', array('user_id' => $userId, 'chat_id' => $chatId));
-            $this->reply($chatId, '✅ Your Telegram is now linked to your osTicket account. You\'ll receive ticket updates here. Use /unlink to disconnect.');
+            $this->reply($chatId, '✅ Vinculado. Aquí recibirás las actualizaciones de tus tickets. Envía /unlink para desvincular.');
             return;
         }
 
@@ -577,11 +589,11 @@ class TelegramBotNotificationsPlugin extends Plugin {
         if ($staffId !== null) {
             $this->links()->linkStaff($staffId, $chatId);
             $this->log('info', 'Linked staff', array('staff_id' => $staffId, 'chat_id' => $chatId));
-            $this->reply($chatId, '✅ Your Telegram is now linked to your osTicket admin account. You\'ll receive admin notifications here. Use /unlink to disconnect.');
+            $this->reply($chatId, '✅ Vinculado como staff. Aquí recibirás las notificaciones admin. Envía /unlink para desvincular.');
             return;
         }
 
-        $this->reply($chatId, 'Linking token is invalid or expired. Please request a new one from your osTicket profile.');
+        $this->reply($chatId, '❌ El token es inválido o expiró. Solicita uno nuevo desde tu perfil o desde el correo de tu ticket.');
     }
 
     private function handleUnlink($chatId) {
@@ -589,7 +601,7 @@ class TelegramBotNotificationsPlugin extends Plugin {
         $staffId = $this->links()->staffIdForChat($chatId);
 
         if ($userId === null && $staffId === null) {
-            $this->reply($chatId, 'This chat is not linked to any osTicket account.');
+            $this->reply($chatId, 'Este chat no está vinculado a ninguna cuenta.');
             return;
         }
         if ($userId !== null) {
@@ -600,20 +612,44 @@ class TelegramBotNotificationsPlugin extends Plugin {
             $this->links()->unlinkStaffByChat($chatId);
             $this->log('info', 'Unlinked staff', array('staff_id' => $staffId, 'chat_id' => $chatId));
         }
-        $this->reply($chatId, '🔌 Unlinked. You will no longer receive notifications here.');
+        $this->reply($chatId, '🔌 Desvinculado. Ya no recibirás notificaciones aquí.');
     }
 
     private function handleStatus($chatId) {
         $userId  = $this->links()->userIdForChat($chatId);
         $staffId = $this->links()->staffIdForChat($chatId);
         $parts = array();
-        if ($userId !== null)  { $parts[] = 'osTicket user #'  . $userId; }
-        if ($staffId !== null) { $parts[] = 'osTicket staff #' . $staffId; }
+        if ($userId !== null)  { $parts[] = 'cliente #'  . $userId; }
+        if ($staffId !== null) { $parts[] = 'staff #' . $staffId; }
         if (!$parts) {
-            $this->reply($chatId, 'This chat is not linked.');
+            $this->reply($chatId, 'Este chat no está vinculado. Tu chat_id es: ' . $chatId);
             return;
         }
-        $this->reply($chatId, 'Linked to: ' . implode(' + ', $parts) . '.');
+        $this->reply($chatId, 'Vinculado como: ' . implode(' + ', $parts) . '.');
+    }
+
+    /**
+     * /whoami /id /chatid → reply with the user's chat_id so they can
+     * paste it elsewhere or share it with support. Doesn't require the
+     * chat to be linked — anyone who messages the bot can use it.
+     */
+    private function handleWhoami($chatId) {
+        $this->reply($chatId, 'Tu chat_id es: ' . $chatId);
+    }
+
+    /**
+     * /help → reply with the list of supported commands. Discoverable
+     * UX so users don't have to guess.
+     */
+    private function handleHelp($chatId) {
+        $msg  = "Comandos disponibles:\n";
+        $msg .= "/start  — saludo del bot\n";
+        $msg .= "/start <token>  — vincular cuenta (token desde el panel)\n";
+        $msg .= "/status — ver si este chat está vinculado\n";
+        $msg .= "/whoami — mostrar tu chat_id\n";
+        $msg .= "/unlink — desvincular este chat\n";
+        $msg .= "/help   — esta ayuda";
+        $this->reply($chatId, $msg);
     }
 
     private function reply($chatId, $text) {
