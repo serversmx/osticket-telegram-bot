@@ -100,14 +100,63 @@ class TgFormatter {
         $allowed = '<b><strong><i><em><u><ins><s><strike><del><a><code><pre><br><span><blockquote>';
         $stripped = strip_tags($html, $allowed);
 
-        // Telegram doesn't actually allow <span class="…"> — strip class
-        // attributes off everything except tg-spoiler.
-        $stripped = preg_replace_callback('#<span\b([^>]*)>#i', function ($m) {
-            if (strpos($m[1], 'tg-spoiler') !== false) {
-                return '<span class="tg-spoiler">';
+        // Telegram only accepts <span class="tg-spoiler">. Any other
+        // <span> would crash Telegram with "Bad Request: can't parse
+        // entities: Unmatched end tag" if we kept the close alone (the
+        // legacy code stripped opens with strip_tags but left </span>
+        // behind). Strategy:
+        //   1) Protect tg-spoiler open/close with NUL sentinels so the
+        //      sweep below can't touch them.
+        //   2) Sweep ALL remaining <span ...> and </span> tags.
+        //   3) Restore the sentinels.
+        // This deliberately flattens nested-style spans inside a
+        // tg-spoiler (Telegram doesn't support nesting anyway).
+        $stripped = preg_replace(
+            '#<span\b[^>]*\btg-spoiler\b[^>]*>#i',
+            "\x00TGS_OPEN\x00",
+            $stripped
+        );
+        // The "close" sentinel is greedier: it claims a </span> as a
+        // tg-spoiler close only if a TGS_OPEN sentinel still lacks a
+        // matching close. Walk the string to maintain a depth counter.
+        $out   = '';
+        $i     = 0;
+        $len   = strlen($stripped);
+        $depth = 0;
+        while ($i < $len) {
+            if (substr($stripped, $i, 10) === "\x00TGS_OPEN\x00") {
+                $out  .= "\x00TGS_OPEN\x00";
+                $depth++;
+                $i += 10;
+                continue;
             }
-            return '';
-        }, $stripped);
+            if (preg_match('#^<span\b[^>]*>#i', substr($stripped, $i), $m)) {
+                // Styled span open — drop entirely.
+                $i += strlen($m[0]);
+                continue;
+            }
+            if (preg_match('#^</span\b[^>]*>#i', substr($stripped, $i), $m)) {
+                if ($depth > 0) {
+                    $out .= "\x00TGS_CLOSE\x00";
+                    $depth--;
+                }
+                // else: orphan close from a styled span — drop it.
+                $i += strlen($m[0]);
+                continue;
+            }
+            $out .= $stripped[$i];
+            $i++;
+        }
+        // Any unclosed tg-spoiler at EOF: emit closes to keep balance.
+        while ($depth > 0) {
+            $out .= "\x00TGS_CLOSE\x00";
+            $depth--;
+        }
+        $stripped = str_replace(
+            array("\x00TGS_OPEN\x00", "\x00TGS_CLOSE\x00"),
+            array('<span class="tg-spoiler">', '</span>'),
+            $out
+        );
 
         // Decode HTML entities so users see them rendered, not as `&amp;`.
         $stripped = html_entity_decode($stripped, ENT_QUOTES | ENT_HTML5, 'UTF-8');

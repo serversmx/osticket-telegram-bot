@@ -28,6 +28,9 @@ class TelegramFormatterTest {
         $this->test_html_to_telegram_preserves_bold();
         $this->test_html_to_telegram_br_to_newline();
         $this->test_html_to_telegram_strips_span_class();
+        $this->test_html_to_telegram_strips_matching_close_span();
+        $this->test_html_to_telegram_strips_styled_span_pair();
+        $this->test_html_to_telegram_preserves_tg_spoiler();
 
         $this->test_html_to_md2_bold_escapes_inner();
         $this->test_html_to_md2_link();
@@ -142,6 +145,40 @@ class TelegramFormatterTest {
         } else {
             $this->passed++;
         }
+    }
+    // Regression: an unmatched closing </span> crashed Telegram with
+    // "Bad Request: can't parse entities: Unmatched end tag" because the
+    // open tag was stripped but the close tag was left behind.
+    private function test_html_to_telegram_strips_matching_close_span() {
+        $out = TgFormatter::htmlToTelegram('<span class="evil">secret</span>');
+        if (strpos($out, '</span>') !== false) {
+            $this->failed++;
+            $this->failures[] = 'closing </span> leaked when open was stripped: ' . var_export($out, true);
+        } else {
+            $this->passed++;
+        }
+        // Content must still be preserved.
+        $this->assertContains('secret', $out, 'span content preserved');
+    }
+    private function test_html_to_telegram_strips_styled_span_pair() {
+        // Real-world case from osTicket Redactor output that triggered
+        // "Bad Request: can't parse entities: Unmatched end tag at byte
+        // offset 1643, expected </a>, found </span>".
+        $in = '<a href="https://example.com">link</a> with <span style="color:#e63946;font-weight:bold">red</span> word';
+        $out = TgFormatter::htmlToTelegram($in);
+        if (substr_count($out, '<span') !== substr_count($out, '</span>')) {
+            $this->failed++;
+            $this->failures[] = 'unbalanced span tags in output: ' . var_export($out, true);
+        } else {
+            $this->passed++;
+        }
+        $this->assertContains('red', $out, 'styled span content kept');
+        $this->assertContains('<a href="https://example.com">link</a>', $out, 'sibling anchor untouched');
+    }
+    private function test_html_to_telegram_preserves_tg_spoiler() {
+        $out = TgFormatter::htmlToTelegram('<span class="tg-spoiler">hidden</span>');
+        $this->assertSame('<span class="tg-spoiler">hidden</span>', $out,
+            'tg-spoiler span kept verbatim');
     }
 
     // ─── htmlToMarkdownV2 ────────────────────────────────────────────────

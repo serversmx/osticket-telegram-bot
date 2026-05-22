@@ -369,6 +369,23 @@ class TelegramBotNotificationsPlugin extends Plugin {
         }
         if (!$email || !preg_match('/^[^\s@]+@[^\s@]+$/', $email)) { return; }
 
+        // Skip automated/non-deliverable senders. Mailing them an invite is
+        // guaranteed to bounce, which loops back into the support inbox as a
+        // brand-new "Mail delivery failed" ticket. Anything from a bounces
+        // mailbox, postmaster, mailer-daemon, or a do-not-reply alias is a
+        // robot that can't read the invite anyway.
+        $emailLower = strtolower($email);
+        if (preg_match(
+                '/^(mailer-daemon|postmaster|no-?reply|noreply|do-?not-?reply|donotreply|bounces?|automated|system|abuse|root|daemon)@/',
+                $emailLower
+            )
+            || strpos($emailLower, '@bounces.') !== false
+            || strpos($emailLower, 'mailer-daemon@') !== false
+            || strpos($emailLower, '.bounces.') !== false
+        ) {
+            return;
+        }
+
         $url = $this->generateLinkUrl($userId);
         if (!$url) { return; }
 

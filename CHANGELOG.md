@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Telegram `400 Bad Request: can't parse entities: Unmatched end tag`** when a ticket body included styled HTML spans (e.g. `<span style="color:red">…</span>`). The previous `htmlToTelegram()` stripped the *open* `<span …>` but left the matching `</span>` dangling, which crashed Telegram's HTML parser. The sanitizer now walks the string with a depth counter: tg-spoiler spans are preserved verbatim, styled spans collapse to their inner text, and orphan/unbalanced `</span>` tags are dropped. Regression tests cover styled, mixed, nested and unbalanced cases.
+- **Bounce/auto-reply loop from `emailLinkOffer()`.** When a ticket was created from a `Mailer-Daemon` bounce or a `do-not-reply@…` autoresponder, the plugin would mail the post-ticket invite to that address, the MTA would bounce it again, osTicket would create a new ticket from the bounce, and the cycle repeated. `emailLinkOffer()` now skips senders matching automated-mailbox patterns (`mailer-daemon@`, `postmaster@`, `no-?reply@`, `do-?not-?reply@`, `bounces?@`, `automated@`, `system@`, `abuse@`, `root@`, `daemon@`) and any address inside `@bounces.*` / `*.bounces.*` zones. Pair this with the osTicket email filter that rejects bounces at ticket-creation time (recommended) for a defence in depth.
+
 ## [0.2.0] - 2026-05-21
 
 ### Added
