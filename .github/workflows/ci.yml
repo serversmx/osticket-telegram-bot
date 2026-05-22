@@ -9,7 +9,7 @@ on:
 jobs:
   test:
     name: PHP ${{ matrix.php }}
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     strategy:
       fail-fast: false
       matrix:
@@ -42,7 +42,7 @@ jobs:
 
   docker-build:
     name: Docker build smoke
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
       - name: Build osTicket image
