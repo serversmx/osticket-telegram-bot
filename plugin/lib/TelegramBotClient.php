@@ -142,6 +142,21 @@ class TelegramBotClient {
     }
 
     /**
+     * Replace the inline keyboard on a previously sent message. Pass
+     * array('inline_keyboard' => array()) to strip the keyboard entirely
+     * (we do this after a callback button is consumed so it can't fire
+     * twice). Best-effort: ignored when the original message is older
+     * than 48h (Telegram limit) — caller should not raise on failure.
+     */
+    public function editMessageReplyMarkup($chatId, $messageId, array $replyMarkup) {
+        return $this->call('editMessageReplyMarkup', array(
+            'chat_id'      => $chatId,
+            'message_id'   => (int) $messageId,
+            'reply_markup' => json_encode($replyMarkup),
+        ));
+    }
+
+    /**
      * Retry orchestrator. Retries 429 / 5xx / network errors with backoff.
      */
     private function call($method, array $payload) {

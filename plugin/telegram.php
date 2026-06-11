@@ -77,6 +77,10 @@ class TelegramBotNotificationsPlugin extends Plugin {
             'btn_view_ticket_label'         => '🎟 View ticket',
             'btn_reply'                     => '1',
             'btn_reply_label'               => '💬 Reply',
+            'btn_assign_me'                 => '1',
+            'btn_assign_me_label'           => '👤 Asignar a mí',
+            'btn_close_ticket'              => '1',
+            'btn_close_ticket_label'        => '✅ Cerrar ticket',
             'send_delay_ms'                 => '0',
             'base_url'                      => '',
             // Templates
@@ -219,9 +223,16 @@ class TelegramBotNotificationsPlugin extends Plugin {
      */
     public function processUpdate(array $update) {
         try {
+            // Callback queries from inline keyboard buttons (e.g. "Asignar a
+            // mí", "Cerrar ticket"). Handled before regular messages because
+            // they don't carry a top-level 'message' field on every variant.
+            if (isset($update['callback_query'])) {
+                $this->handleCallbackQuery($update['callback_query']);
+                return;
+            }
+
             $msg = isset($update['message']) ? $update['message'] : null;
             if (!$msg) {
-                // Could be a callback_query etc. Out of scope for v0.1.
                 return;
             }
             $chatId = isset($msg['chat']['id']) ? (int) $msg['chat']['id'] : 0;
@@ -283,7 +294,7 @@ class TelegramBotNotificationsPlugin extends Plugin {
             return array('ok' => false, 'error' => 'webhook_public_url not configured');
         }
         $opts = array(
-            'allowed_updates'      => array('message'),
+            'allowed_updates'      => array('message', 'callback_query'),
             'drop_pending_updates' => true,
         );
         $secret = trim((string) $cfg->get('webhook_secret_token'));
@@ -669,6 +680,145 @@ class TelegramBotNotificationsPlugin extends Plugin {
         $this->reply($chatId, $msg);
     }
 
+    /**
+     * Inline-keyboard callback dispatcher. Telegram sends a callback_query
+     * Update when the user taps a callback_data button. We:
+     *   1) Resolve the staff member from chat_id (must be linked).
+     *   2) Parse the callback_data ("action:ticket_id" form).
+     *   3) Execute the action on the ticket.
+     *   4) answerCallbackQuery() with a short toast text — REQUIRED so
+     *      the spinner on the button stops.
+     *   5) editMessageReplyMarkup() to disable the consumed buttons,
+     *      so the same action can't be triggered twice from the same msg.
+     */
+    private function handleCallbackQuery(array $cq) {
+        $cqId   = isset($cq['id']) ? (string) $cq['id'] : '';
+        $data   = isset($cq['data']) ? (string) $cq['data'] : '';
+        $chatId = isset($cq['message']['chat']['id']) ? (int) $cq['message']['chat']['id'] : 0;
+        $msgId  = isset($cq['message']['message_id']) ? (int) $cq['message']['message_id'] : 0;
+        if ($cqId === '' || $data === '' || $chatId === 0) {
+            return;
+        }
+
+        // Staff resolution: chat_id must be linked to a Staff record. If a
+        // customer chat tries to press an admin button (shouldn't happen
+        // since admin buttons are only rendered on admin notifications,
+        // but defense in depth), we refuse.
+        $staffId = $this->resolveStaffByChatId($chatId);
+        if ($staffId <= 0) {
+            $this->api()->answerCallbackQuery($cqId, 'No autorizado. Vincule su cuenta primero (/start).', array('show_alert' => true));
+            return;
+        }
+
+        // Data format: "action:ticket_id". Reject anything else.
+        if (!preg_match('/^([a-z_]+):(\d+)$/', $data, $m)) {
+            $this->api()->answerCallbackQuery($cqId, 'Acción no reconocida.');
+            return;
+        }
+        $action = $m[1];
+        $ticketId = (int) $m[2];
+
+        $ticket = Ticket::lookup($ticketId);
+        if (!$ticket) {
+            $this->api()->answerCallbackQuery($cqId, 'Ticket no encontrado.', array('show_alert' => true));
+            return;
+        }
+
+        switch ($action) {
+            case 'assign':
+                $this->callbackAssign($cqId, $chatId, $msgId, $ticket, $staffId);
+                break;
+            case 'close':
+                $this->callbackClose($cqId, $chatId, $msgId, $ticket, $staffId);
+                break;
+            default:
+                $this->api()->answerCallbackQuery($cqId, 'Acción no soportada.');
+                break;
+        }
+    }
+
+    /**
+     * Resolve a Staff.staff_id from a Telegram chat_id via the
+     * ostt4_telegram_staff_links table. Returns 0 when not linked.
+     */
+    private function resolveStaffByChatId($chatId) {
+        try {
+            $sid = $this->links()->staffIdForChat((int) $chatId);
+            return $sid !== null ? (int) $sid : 0;
+        } catch (Exception $e) {
+            $this->log('warning', 'resolveStaffByChatId failed', array('exception' => $e->getMessage()));
+            return 0;
+        }
+    }
+
+    /**
+     * "Asignar a mí" — assign the ticket to the staff member who pressed
+     * the button. We use Ticket::assignToStaff() so all hooks/notifications
+     * fire as if it were done from the web UI.
+     */
+    private function callbackAssign($cqId, $chatId, $msgId, Ticket $ticket, $staffId) {
+        try {
+            $staff = Staff::lookup((int) $staffId);
+            if (!$staff || !$staff->isActive()) {
+                $this->api()->answerCallbackQuery($cqId, 'Tu cuenta de staff está inactiva.', array('show_alert' => true));
+                return;
+            }
+            $errors = array();
+            $ok = $ticket->assignToStaff($staffId, __('Asignado desde Telegram'), false);
+            if (!$ok) {
+                $this->api()->answerCallbackQuery($cqId, 'No se pudo asignar.', array('show_alert' => true));
+                return;
+            }
+            $name = $staff->getName();
+            $this->api()->answerCallbackQuery($cqId, '✓ Asignado a ' . (string) $name);
+            $this->clearKeyboardOnMessage($chatId, $msgId);
+        } catch (Exception $e) {
+            $this->report($e, array('event' => 'callback.assign'));
+            $this->api()->answerCallbackQuery($cqId, 'Error al asignar (revisa logs).', array('show_alert' => true));
+        }
+    }
+
+    /**
+     * "Cerrar ticket" — set status=Closed via Ticket::setStatus(). Posts an
+     * internal note attributed to the staff member who pressed the button.
+     */
+    private function callbackClose($cqId, $chatId, $msgId, Ticket $ticket, $staffId) {
+        try {
+            $staff = Staff::lookup((int) $staffId);
+            if (!$staff || !$staff->isActive()) {
+                $this->api()->answerCallbackQuery($cqId, 'Tu cuenta de staff está inactiva.', array('show_alert' => true));
+                return;
+            }
+            $closedStatus = TicketStatus::lookup(array('state' => 'closed'));
+            if (!$closedStatus) {
+                $this->api()->answerCallbackQuery($cqId, 'No hay estado "Closed" configurado.', array('show_alert' => true));
+                return;
+            }
+            $thisUser = new osTicketStaff($staff);
+            $errors = array();
+            $ok = $ticket->setStatus($closedStatus->getId(), __('Cerrado desde Telegram por ') . $staff->getName(), $errors, false);
+            if (!$ok) {
+                $this->api()->answerCallbackQuery($cqId, 'No se pudo cerrar.', array('show_alert' => true));
+                return;
+            }
+            $this->api()->answerCallbackQuery($cqId, '✓ Ticket cerrado');
+            $this->clearKeyboardOnMessage($chatId, $msgId);
+        } catch (Exception $e) {
+            $this->report($e, array('event' => 'callback.close'));
+            $this->api()->answerCallbackQuery($cqId, 'Error al cerrar (revisa logs).', array('show_alert' => true));
+        }
+    }
+
+    /**
+     * Strip the inline keyboard from a previously sent message so the user
+     * can't press the same button twice. Best-effort: ignores errors (e.g.
+     * if Telegram already deleted the original message after 48h).
+     */
+    private function clearKeyboardOnMessage($chatId, $msgId) {
+        if ($chatId === 0 || $msgId === 0) { return; }
+        $this->api()->editMessageReplyMarkup($chatId, $msgId, array('inline_keyboard' => array()));
+    }
+
     private function reply($chatId, $text) {
         $this->api()->sendMessage($chatId, $text);
     }
@@ -918,8 +1068,9 @@ class TelegramBotNotificationsPlugin extends Plugin {
         $base = rtrim($base, '/');
         $tid  = (int) $ticket->getId();
         $kb   = new TgInlineKeyboard();
-        $kb->addRow();
 
+        // Row 1: URL buttons (open ticket in web UI).
+        $kb->addRow();
         if ($this->pref('btn_view_ticket')) {
             $label = trim((string) $this->pref('btn_view_ticket_label')) ?: 'View ticket';
             $kb->urlButton($label, $base . '/scp/tickets.php?id=' . $tid);
@@ -928,6 +1079,21 @@ class TelegramBotNotificationsPlugin extends Plugin {
             $label = trim((string) $this->pref('btn_reply_label')) ?: 'Reply';
             $kb->urlButton($label, $base . '/scp/tickets.php?id=' . $tid . '#reply');
         }
+
+        // Row 2: callback action buttons (admin only — clients can't act).
+        // Webhook routes these to handleCallbackQuery -> close/assign/etc.
+        if ($forAdmin) {
+            $kb->addRow();
+            if ($this->pref('btn_assign_me')) {
+                $label = trim((string) $this->pref('btn_assign_me_label')) ?: 'Asignar a mí';
+                $kb->callbackButton($label, 'assign:' . $tid);
+            }
+            if ($this->pref('btn_close_ticket')) {
+                $label = trim((string) $this->pref('btn_close_ticket_label')) ?: 'Cerrar ticket';
+                $kb->callbackButton($label, 'close:' . $tid);
+            }
+        }
+
         return $kb->build();
     }
 
