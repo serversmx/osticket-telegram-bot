@@ -867,6 +867,16 @@ class TelegramBotNotificationsPlugin extends Plugin {
     }
 
     private function posterType($entry) {
+        // FIX 2026-06-11: $entry->getPoster() retorna STRING (nombre), no objeto.
+        // Determinar tipo via columnas staff_id / user_id directamente.
+        try {
+            $staffId = (int)$entry->staff_id;
+            $userId = (int)$entry->user_id;
+            if ($staffId > 0) { return "staff"; }
+            if ($userId > 0) { return "user"; }
+            // fallback: si poster es string sin user_id ni staff_id, asumir system
+        } catch (Exception $e) {}
+        // legacy path (en caso de que getPoster sea sobrescrito en algún future osTicket):
         try {
             $p = $entry->getPoster();
             if ($p instanceof Staff)        { return 'staff'; }

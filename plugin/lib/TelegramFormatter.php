@@ -90,12 +90,33 @@ class TgFormatter {
     public static function htmlToTelegram($html) {
         $html = (string) $html;
         // <br>, <p> → newlines.
-        $html = preg_replace('#<br\s*/?>#i', "\n", $html);
+        $html = preg_replace('#<br[^>]*/?>#i', "\n", $html);
         $html = preg_replace('#</p>\s*<p[^>]*>#i', "\n\n", $html);
         $html = preg_replace('#<p[^>]*>#i', '', $html);
         $html = preg_replace('#</p>#i', '', $html);
         $html = preg_replace('#<li[^>]*>#i', '• ', $html);
         $html = preg_replace('#</li>#i', "\n", $html);
+
+        // FIX 2026-06-11: sanitize allowed-tag attributes before strip_tags.
+        // Telegram HTML mode rejects attributes on <b>/<i>/<blockquote>, and
+        // <a> only accepts href. Without this, real email bodies (with style="")
+        // produce 400 "can't parse entities".
+        $html = preg_replace_callback(
+            '#<a\b[^>]*>#i',
+            function ($m) {
+                if (preg_match('#href\s*=\s*(?:"([^"]+)"|\'([^\']+)\'|([^\s>]+))#i', $m[0], $h)) {
+                    $u = $h[1] !== '' ? $h[1] : ($h[2] !== '' ? $h[2] : $h[3]);
+                    return '<a href="' . htmlspecialchars($u, ENT_QUOTES) . '">';
+                }
+                return '';
+            },
+            $html
+        );
+        $html = preg_replace(
+            '#<(/?)(b|strong|i|em|u|ins|s|strike|del|code|pre|blockquote)\b[^>]*>#i',
+            '<$1$2>',
+            $html
+        );
 
         $allowed = '<b><strong><i><em><u><ins><s><strike><del><a><code><pre><br><span><blockquote>';
         $stripped = strip_tags($html, $allowed);
@@ -158,8 +179,13 @@ class TgFormatter {
             $out
         );
 
-        // Decode HTML entities so users see them rendered, not as `&amp;`.
+        // FIX 2026-06-11: preserve &lt; / &gt; during decode. Otherwise
+        // entities embedded in plain text (e.g. "&lt;email@x&gt;" from a
+        // forwarded message) become literal < > that Telegram interprets
+        // as malformed tags and rejects with 400.
+        $stripped = strtr($stripped, array('&lt;' => "\x00LT\x00", '&gt;' => "\x00GT\x00"));
         $stripped = html_entity_decode($stripped, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $stripped = strtr($stripped, array("\x00LT\x00" => '&lt;', "\x00GT\x00" => '&gt;'));
 
         // Collapse runs of blank lines.
         $stripped = preg_replace("/\n{3,}/", "\n\n", $stripped);
@@ -178,7 +204,7 @@ class TgFormatter {
     public static function htmlToMarkdownV2($html) {
         $html = (string) $html;
         // <br>, <p>, <li> → newlines / list markers.
-        $html = preg_replace('#<br\s*/?>#i', "\n", $html);
+        $html = preg_replace('#<br[^>]*/?>#i', "\n", $html);
         $html = preg_replace('#</p>\s*<p[^>]*>#i', "\n\n", $html);
         $html = preg_replace('#<p[^>]*>#i', '', $html);
         $html = preg_replace('#</p>#i', '', $html);
