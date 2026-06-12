@@ -755,12 +755,21 @@ class TelegramBotNotificationsPlugin extends Plugin {
      * "Asignar a mí" — assign the ticket to the staff member who pressed
      * the button. We use Ticket::assignToStaff() so all hooks/notifications
      * fire as if it were done from the web UI.
+     *
+     * Auth: a linked staff member could spoof callback_data to act on a
+     * ticket they couldn't normally touch in the web UI (their button was
+     * never rendered for that ticket). So we explicitly check assign
+     * permission against the resolved Staff before doing anything.
      */
     private function callbackAssign($cqId, $chatId, $msgId, Ticket $ticket, $staffId) {
         try {
             $staff = Staff::lookup((int) $staffId);
             if (!$staff || !$staff->isActive()) {
                 $this->api()->answerCallbackQuery($cqId, 'Tu cuenta de staff está inactiva.', array('show_alert' => true));
+                return;
+            }
+            if (!$this->staffMayActOn($staff, $ticket, 'assign')) {
+                $this->api()->answerCallbackQuery($cqId, 'No tienes permiso para asignar este ticket.', array('show_alert' => true));
                 return;
             }
             $errors = array();
@@ -781,6 +790,7 @@ class TelegramBotNotificationsPlugin extends Plugin {
     /**
      * "Cerrar ticket" — set status=Closed via Ticket::setStatus(). Posts an
      * internal note attributed to the staff member who pressed the button.
+     * Same auth model as callbackAssign — verify permission first.
      */
     private function callbackClose($cqId, $chatId, $msgId, Ticket $ticket, $staffId) {
         try {
@@ -789,12 +799,15 @@ class TelegramBotNotificationsPlugin extends Plugin {
                 $this->api()->answerCallbackQuery($cqId, 'Tu cuenta de staff está inactiva.', array('show_alert' => true));
                 return;
             }
+            if (!$this->staffMayActOn($staff, $ticket, 'close')) {
+                $this->api()->answerCallbackQuery($cqId, 'No tienes permiso para cerrar este ticket.', array('show_alert' => true));
+                return;
+            }
             $closedStatus = TicketStatus::lookup(array('state' => 'closed'));
             if (!$closedStatus) {
                 $this->api()->answerCallbackQuery($cqId, 'No hay estado "Closed" configurado.', array('show_alert' => true));
                 return;
             }
-            $thisUser = new osTicketStaff($staff);
             $errors = array();
             $ok = $ticket->setStatus($closedStatus->getId(), __('Cerrado desde Telegram por ') . $staff->getName(), $errors, false);
             if (!$ok) {
@@ -806,6 +819,40 @@ class TelegramBotNotificationsPlugin extends Plugin {
         } catch (Exception $e) {
             $this->report($e, array('event' => 'callback.close'));
             $this->api()->answerCallbackQuery($cqId, 'Error al cerrar (revisa logs).', array('show_alert' => true));
+        }
+    }
+
+    /**
+     * Authorization gate for callback actions. Linked chat_id alone isn't
+     * enough — callback_data is attacker-controllable (forwarded message,
+     * spoofed via API). Require the resolved staff to have the matching
+     * ticket-level permission via Ticket::checkStaffPerm() / Staff role
+     * lookup. Admins always pass.
+     *
+     * Returns false on any error / missing constant, so we fail closed.
+     */
+    private function staffMayActOn(Staff $staff, Ticket $ticket, $action) {
+        try {
+            if (method_exists($staff, 'isAdmin') && $staff->isAdmin()) {
+                return true;
+            }
+            // Map our action to osTicket's permission constants when available.
+            // Different osTicket versions name these differently — guard each.
+            $perm = null;
+            if ($action === 'close' && defined('Ticket::PERM_CLOSE')) {
+                $perm = Ticket::PERM_CLOSE;
+            } elseif ($action === 'assign' && defined('Ticket::PERM_ASSIGN')) {
+                $perm = Ticket::PERM_ASSIGN;
+            }
+            if ($perm !== null && method_exists($ticket, 'checkStaffPerm')) {
+                return (bool) $ticket->checkStaffPerm($staff, $perm);
+            }
+            // Fallback: deny non-admin staff when we can't verify the perm.
+            // Better to surface "No autorizado" than to silently authorize.
+            return false;
+        } catch (Exception $e) {
+            $this->log('warning', 'staffMayActOn failed', array('exception' => $e->getMessage()));
+            return false;
         }
     }
 
