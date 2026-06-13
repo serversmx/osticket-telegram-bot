@@ -77,11 +77,18 @@ if (!$activeInstance) {
     error_log('[TelegramBot/webhook] Plugin has no active instance.');
     exit;
 }
-$cfg = $plugin->getConfig($activeInstance);
+// FIX 2026-06-12: DO NOT name this $cfg. main.inc.php already set the global
+// $cfg to osTicket's OsticketConfig, and webhook.php runs in file scope, so
+// reusing the name overwrites it. Later, when a callback handler calls
+// Ticket::assignToStaff() -> Staff::getName() -> new AgentsName(), the
+// AgentsName constructor does `global $cfg; $cfg->getAgentNameFormat()` and
+// crashes because TelegramBotNotificationsPluginConfig has no such method
+// (Sentry TICKETS-TVPLUS-F).
+$pluginCfg = $plugin->getConfig($activeInstance);
 
 // 3. Verify the secret token. If the admin didn't set one, accept anyway
 // (but warn in the log — strongly recommended to set one).
-$configuredSecret = trim((string) $cfg->get('webhook_secret_token'));
+$configuredSecret = trim((string) $pluginCfg->get('webhook_secret_token'));
 $gotSecret = isset($_SERVER['HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN'])
     ? (string) $_SERVER['HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN']
     : '';
