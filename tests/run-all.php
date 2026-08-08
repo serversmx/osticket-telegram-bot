@@ -11,6 +11,7 @@ $tests = array(
     $dir . '/SentryReporterTest.php',
     $dir . '/LogRedactorTest.php',
     $dir . '/LogRedactorTelegramKeysTest.php',
+    $dir . '/SafeSentryTest.php',
 );
 
 $shellRun = 'ex' . 'ec';

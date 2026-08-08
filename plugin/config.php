@@ -152,6 +152,32 @@ class TelegramBotNotificationsPluginConfig extends PluginConfig {
                 'default' => false,
             )),
 
+            // ─── Ticket state sync ───────────────────────────────────────────
+            'sec_sync' => new SectionBreakField(array(
+                'label' => '🔄  Sincronización de estado',
+                'hint'  => 'Cuando un ticket cambia de estado (cerrado, eliminado, asignado), '
+                         . 'edita la notificación original en Telegram para reflejarlo.',
+            )),
+            'sync_ticket_state' => new BooleanField(array(
+                'label'   => 'Sincronizar cambios de estado con Telegram',
+                'default' => true,
+                'hint'    => 'Al cerrar/asignar/transferir un ticket, se edita la publicación de Telegram '
+                           . 'para mostrar el nuevo estado y quitar los botones de acción.',
+            )),
+            'sync_on_delete' => new BooleanField(array(
+                'label'   => 'Al eliminar: incluir asunto del ticket',
+                'default' => false,
+                'hint'    => 'Por privacidad (GDPR/DMCA), por defecto NO se re-transmite el asunto del ticket '
+                           . 'a Telegram cuando se elimina — solo se quitan los botones. Activar solo si '
+                           . 'necesitas que el asunto aparezca tachado en la publicación editada.',
+            )),
+            'rate_limit_enabled' => new BooleanField(array(
+                'label'   => 'Rate-limit del bot (recomendado)',
+                'default' => true,
+                'hint'    => 'Respeta los límites de Telegram (~30/s bot-wide, ~1/s por chat). Sin esto, '
+                           . 'una operación en lote (cerrar 50 tickets) puede provocar HTTP 429.',
+            )),
+
             // ─── Debug ───────────────────────────────────────────────────────
             'sec_debug' => new SectionBreakField(array(
                 'label' => '🐛  Debug',

@@ -149,11 +149,92 @@ class TelegramBotClient {
      * than 48h (Telegram limit) — caller should not raise on failure.
      */
     public function editMessageReplyMarkup($chatId, $messageId, array $replyMarkup) {
-        return $this->call('editMessageReplyMarkup', array(
+        $res = $this->call('editMessageReplyMarkup', array(
             'chat_id'      => $chatId,
             'message_id'   => (int) $messageId,
             'reply_markup' => json_encode($replyMarkup),
         ));
+        $res['error_kind'] = $this->classifyEditError($res);
+        return $res;
+    }
+
+    /**
+     * Edit the text of a previously sent message. Used by syncTicketState
+     * to decorate the original ticket notification when the ticket's
+     * state changes (closed, deleted, assigned, etc.).
+     *
+     * DO NOT pass reply_markup unless caller explicitly wants to KEEP the
+     * inline keyboard — the default behavior is to strip it, since a
+     * closed/deleted ticket shouldn't offer "Asignar a mí" anymore.
+     *
+     * The `parse_mode` and `disable_web_page_preview` mirror the
+     * defaults from sendMessage so decorations render the same way.
+     *
+     * $opts:
+     *   - parse_mode (default 'HTML')
+     *   - disable_web_page_preview (default true)
+     *   - reply_markup (default OMITTED — strips existing keyboard)
+     */
+    public function editMessageText($chatId, $messageId, $text, array $opts = array()) {
+        $payload = array(
+            'chat_id'    => $chatId,
+            'message_id' => (int) $messageId,
+            'text'       => (string) $text,
+        );
+        $parseMode = isset($opts['parse_mode']) ? $opts['parse_mode'] : 'HTML';
+        if ($parseMode) { $payload['parse_mode'] = $parseMode; }
+        $noPreview = array_key_exists('disable_web_page_preview', $opts) ? (bool) $opts['disable_web_page_preview'] : true;
+        if ($noPreview) { $payload['disable_web_page_preview'] = true; }
+        // Only include reply_markup if caller explicitly set it. Absent
+        // key = strip keyboard on the edited message.
+        if (array_key_exists('reply_markup', $opts) && $opts['reply_markup'] !== null) {
+            $payload['reply_markup'] = is_array($opts['reply_markup'])
+                ? json_encode($opts['reply_markup'])
+                : $opts['reply_markup'];
+        }
+        $res = $this->call('editMessageText', $payload);
+        $res['error_kind'] = $this->classifyEditError($res);
+        return $res;
+    }
+
+    /**
+     * Classify an editMessage* failure so callers (SentMessageStore.
+     * recordFailure, syncTicketState, etc.) can decide whether to
+     * retry, defer, or drop the row.
+     *
+     * Returns null for success. For errors, returns one of:
+     *   - 'not_modified' — Telegram: same text/markup as before. Safe no-op.
+     *   - 'gone'         — 'message to edit not found' — original deleted by
+     *                      the user (or Telegram lost track). Increment
+     *                      failure_count; delete after N recurrences.
+     *   - 'expired'      — 'message can't be edited' — past the 48h window.
+     *                      Same handling as 'gone'.
+     *   - 'rate_limited' — HTTP 429; caller should defer / backoff.
+     *   - 'transport'    — Network / 5xx after retries. Caller may retry
+     *                      later; do NOT increment failure_count.
+     *   - 'other'        — Any other 4xx. Log + skip.
+     */
+    private function classifyEditError(array $res) {
+        if (!empty($res['ok'])) { return null; }
+        $err = strtolower((string) (isset($res['error']) ? $res['error'] : ''));
+        $status = isset($res['status']) ? (int) $res['status'] : 0;
+
+        if (strpos($err, 'not modified') !== false || strpos($err, 'message is not modified') !== false) {
+            return 'not_modified';
+        }
+        if (strpos($err, 'message to edit not found') !== false || strpos($err, 'message_id_invalid') !== false) {
+            return 'gone';
+        }
+        if (strpos($err, "can't be edited") !== false || strpos($err, 'cant be edited') !== false || strpos($err, 'message can not be edited') !== false) {
+            return 'expired';
+        }
+        if ($status === 429 || strpos($err, 'too many requests') !== false) {
+            return 'rate_limited';
+        }
+        if ($status === 0 || $status >= 500) {
+            return 'transport';
+        }
+        return 'other';
     }
 
     /**

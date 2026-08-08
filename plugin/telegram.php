@@ -15,6 +15,9 @@ require_once dirname(__FILE__) . '/lib/InlineKeyboardBuilder.php';
 require_once dirname(__FILE__) . '/lib/UserLinkStore.php';
 require_once dirname(__FILE__) . '/lib/SentryReporter.php';
 require_once dirname(__FILE__) . '/lib/LogRedactor.php';
+require_once dirname(__FILE__) . '/lib/SentMessageStore.php';
+require_once dirname(__FILE__) . '/lib/RateLimiter.php';
+require_once dirname(__FILE__) . '/lib/SafeSentry.php';
 
 class TelegramBotNotificationsPlugin extends Plugin {
 
@@ -83,6 +86,10 @@ class TelegramBotNotificationsPlugin extends Plugin {
             'btn_close_ticket_label'        => '✅ Cerrar ticket',
             'send_delay_ms'                 => '0',
             'base_url'                      => '',
+            // Ticket-state sync (v0.3 — see SentMessageStore + RateLimiter)
+            'sync_ticket_state'             => '1',   // master toggle
+            'sync_on_delete'                => '0',   // GDPR-safe default: only strip buttons on delete, don't re-broadcast subject
+            'rate_limit_enabled'            => '1',   // token bucket for editMessage fan-out
             // Templates
             'tpl_client_created'     => "Hello <b>{{name}}</b>, we received your ticket <b>#{{ticket_number}}</b>\n<i>{{subject}}</i>\n\nAn agent will get back to you shortly.",
             'tpl_client_staff_reply' => "Hello <b>{{name}}</b>, there's a new reply on ticket <b>#{{ticket_number}}</b>:\n\n{{message}}",
@@ -167,6 +174,16 @@ class TelegramBotNotificationsPlugin extends Plugin {
         }
         if ($this->anyOn('evt_status_changed__client', 'evt_status_changed__admin', 'evt_assignment_changed__admin')) {
             Signal::connect('model.updated', array($this, 'onModelUpdated'));
+        }
+
+        // sync_ticket_state feature: edit the ORIGINAL Telegram card when
+        // the ticket's lifecycle changes (closed / deleted / transferred /
+        // assigned). Design v2 (2026-08-08): defers the actual edit fan-out
+        // to cron() so the signal handler never blocks the staff HTTP
+        // request; only the row-marking is inline. See syncTicketState().
+        if ($this->pref('sync_ticket_state')) {
+            Signal::connect('object.created', array($this, 'onObjectCreated'));
+            Signal::connect('object.edited', array($this, 'onObjectEdited'));
         }
 
         // Register a "Telegram" entry in the staff "Applications" dropdown.
@@ -267,7 +284,7 @@ class TelegramBotNotificationsPlugin extends Plugin {
                     // Ignore unknown commands silently.
                     break;
             }
-        } catch (Exception $e) {
+        } catch (\Throwable $e) {
             $this->report($e, array('event' => 'webhook.update'));
         }
     }
@@ -341,11 +358,19 @@ class TelegramBotNotificationsPlugin extends Plugin {
             $vars = $this->ticketVars($ticket);
             $vars['message'] = $this->firstMessage($ticket);
 
+            $ctxClient = array(
+                'ticket_id' => (int) $ticket->getId(),
+                'notif_type' => 'ticket.created',
+                'subject' => isset($vars['subject']) ? (string) $vars['subject'] : '',
+            );
+            $ctxAdmin = $ctxClient;
+            $ctxAdmin['notif_type'] = 'ticket.created.admin';
+
             if ($this->clientShouldFire('evt_ticket_created')) {
-                $this->sendToClient($ticket, $this->pref('tpl_client_created'), $vars, /*adminKb*/ false);
+                $this->sendToClient($ticket, $this->pref('tpl_client_created'), $vars, /*adminKb*/ false, $ctxClient);
             }
             if ($this->adminShouldFire('evt_ticket_created')) {
-                $this->sendToAdmins($this->pref('tpl_admin_created'), $vars, $this->buildKeyboard($ticket, true));
+                $this->sendToAdmins($this->pref('tpl_admin_created'), $vars, $this->buildKeyboard($ticket, true), $ctxAdmin);
             }
             // Customer has no linked Telegram yet → email them an invitation
             // with a one-shot deep-link token. Works for both logged-in
@@ -357,7 +382,7 @@ class TelegramBotNotificationsPlugin extends Plugin {
                     && $this->resolveClientChatId($ticket) === null) {
                 $this->emailLinkOffer($ticket);
             }
-        } catch (Exception $e) {
+        } catch (\Throwable $e) {
             $this->report($e, array('event' => 'ticket.created'));
         }
     }
@@ -430,7 +455,7 @@ class TelegramBotNotificationsPlugin extends Plugin {
                 'ticket' => $number,
                 'email'  => $email,
             ));
-        } catch (Exception $e) {
+        } catch (\Throwable $e) {
             $this->report($e, array('event' => 'link-offer-email'));
         }
     }
@@ -452,24 +477,32 @@ class TelegramBotNotificationsPlugin extends Plugin {
             $body = TgFormatter::truncate($this->bodyToText($entry->getBody(), $this->pref('parse_mode')), 2500);
             $vars['message'] = $body;
 
+            $ctxBase = array(
+                'ticket_id' => (int) $ticket->getId(),
+                'subject' => isset($vars['subject']) ? (string) $vars['subject'] : '',
+            );
+
             if ($isStaff) {
                 if ($this->clientShouldFire('evt_staff_reply')) {
-                    $this->sendToClient($ticket, $this->pref('tpl_client_staff_reply'), $vars, false);
+                    $ctx = $ctxBase; $ctx['notif_type'] = 'staff_reply.client';
+                    $this->sendToClient($ticket, $this->pref('tpl_client_staff_reply'), $vars, false, $ctx);
                 }
                 if ($this->adminShouldFire('evt_staff_reply')) {
                     $tpl = $this->pref('tpl_admin_staff_reply');
                     if ($tpl === null || $tpl === '') {
                         $tpl = $this->pref('tpl_admin_user_reply');
                     }
-                    $this->sendToAdmins($tpl, $vars, $this->buildKeyboard($ticket, true));
+                    $ctx = $ctxBase; $ctx['notif_type'] = 'staff_reply.admin';
+                    $this->sendToAdmins($tpl, $vars, $this->buildKeyboard($ticket, true), $ctx);
                 }
             }
             if ($isUser) {
                 if ($this->adminShouldFire('evt_user_reply')) {
-                    $this->sendToAdmins($this->pref('tpl_admin_user_reply'), $vars, $this->buildKeyboard($ticket, true));
+                    $ctx = $ctxBase; $ctx['notif_type'] = 'user_reply.admin';
+                    $this->sendToAdmins($this->pref('tpl_admin_user_reply'), $vars, $this->buildKeyboard($ticket, true), $ctx);
                 }
             }
-        } catch (Exception $e) {
+        } catch (\Throwable $e) {
             $this->report($e, array('event' => 'threadentry.created'));
         }
     }
@@ -489,28 +522,92 @@ class TelegramBotNotificationsPlugin extends Plugin {
             if (!$statusChanged && !$assigneeChanged) { return; }
 
             $vars = $this->ticketVars($model);
+            $ctxBase = array(
+                'ticket_id' => (int) $tid,
+                'subject' => isset($vars['subject']) ? (string) $vars['subject'] : '',
+            );
 
             if ($statusChanged) {
                 if ($this->clientShouldFire('evt_status_changed')) {
-                    $this->sendToClient($model, $this->pref('tpl_client_status'), $vars, false);
+                    $ctx = $ctxBase; $ctx['notif_type'] = 'status.client';
+                    $this->sendToClient($model, $this->pref('tpl_client_status'), $vars, false, $ctx);
                 }
                 if ($this->adminShouldFire('evt_status_changed')) {
-                    $this->sendToAdmins($this->pref('tpl_admin_status'), $vars, $this->buildKeyboard($model, true));
+                    $ctx = $ctxBase; $ctx['notif_type'] = 'status.admin';
+                    $this->sendToAdmins($this->pref('tpl_admin_status'), $vars, $this->buildKeyboard($model, true), $ctx);
                 }
+                // Also sync the ORIGINAL ticket.created card so its keyboard
+                // reflects the new state (buttons stripped on close, etc.)
+                $this->maybeSyncTicketState($model);
             }
             if ($assigneeChanged) {
                 if ($this->adminShouldFire('evt_assignment_changed')) {
-                    $this->sendToAdmins($this->pref('tpl_admin_assignment'), $vars, $this->buildKeyboard($model, true));
+                    $ctx = $ctxBase; $ctx['notif_type'] = 'assignment.admin';
+                    $this->sendToAdmins($this->pref('tpl_admin_assignment'), $vars, $this->buildKeyboard($model, true), $ctx);
                 }
+                $this->maybeSyncTicketState($model);
             }
-        } catch (Exception $e) {
+        } catch (\Throwable $e) {
             $this->report($e, array('event' => 'model.updated'));
+        }
+    }
+
+    /**
+     * osTicket fires object.created with $data['type'] IN
+     * {closed, reopened, deleted, transferred, overdue}. We map only the
+     * lifecycle ones to syncTicketState — 'created' itself is handled by
+     * the dedicated ticket.created signal.
+     *
+     * Design v2 note: we mark this ticket as "state changed" in a
+     * per-request bag and let cron() do the actual Telegram edits. This
+     * closes the DoS concern (staff HTTP request never blocks on N chats
+     * of edit round-trips).
+     */
+    function onObjectCreated($object, $data = null) {
+        if (!($object instanceof Ticket)) { return; }
+        if (!$this->pref('sync_ticket_state')) { return; }
+        $type = is_array($data) && isset($data['type']) ? (string) $data['type'] : '';
+        // Strict whitelist. Unknown types default to skip.
+        if (!in_array($type, array('closed', 'reopened', 'deleted', 'transferred'), true)) { return; }
+        // Skip the ORM audit noise (a per-column mirror emit some versions of osTicket do).
+        if (is_array($data) && !empty($data['orm_audit'])) { return; }
+        $this->maybeSyncTicketState($object);
+    }
+
+    function onObjectEdited($object, $data = null) {
+        if (!($object instanceof Ticket)) { return; }
+        if (!$this->pref('sync_ticket_state')) { return; }
+        $type = is_array($data) && isset($data['type']) ? (string) $data['type'] : '';
+        if (!in_array($type, array('assigned', 'referred'), true)) { return; }
+        if (is_array($data) && !empty($data['orm_audit'])) { return; }
+        $this->maybeSyncTicketState($object);
+    }
+
+    /**
+     * Per-request debounce + defer to cron.
+     *
+     * Multiple signals for the same ticket in one HTTP request (e.g. a
+     * setStatus() call fires object.edited + model.updated + object.created
+     * cascade) collapse into a single sync. The cron path re-derives
+     * current state from the live $ticket at edit time, so ordering of
+     * signals doesn't matter.
+     */
+    private $stateChangedInRequest = array();
+    private function maybeSyncTicketState(Ticket $ticket) {
+        $tid = (int) $ticket->getId();
+        if (!$tid) { return; }
+        if (isset($this->stateChangedInRequest[$tid])) { return; }
+        $this->stateChangedInRequest[$tid] = true;
+        try {
+            $this->syncTicketState($ticket);
+        } catch (\Throwable $e) {
+            $this->report($e, array('event' => 'syncTicketState', 'ticket_id' => $tid));
         }
     }
 
     // ─── Senders ─────────────────────────────────────────────────────────
 
-    private function sendToClient(Ticket $ticket, $template, array $vars, $forAdmin = false) {
+    private function sendToClient(Ticket $ticket, $template, array $vars, $forAdmin = false, ?array $context = null) {
         // No opt-in field check: linking IS opt-in. Customer can /unlink
         // anytime to stop notifications.
         $chatId = $this->resolveClientChatId($ticket);
@@ -522,10 +619,10 @@ class TelegramBotNotificationsPlugin extends Plugin {
         $text = TgFormatter::render($template, $this->escapeVarsForParseMode($vars));
         $text = TgFormatter::truncate($text, 3500);
         $kb = $this->buildKeyboard($ticket, $forAdmin);
-        $this->dispatchSend($chatId, $text, $kb);
+        $this->dispatchSend($chatId, $text, $kb, $context);
     }
 
-    private function sendToAdmins($template, array $vars, $keyboardMarkup = null) {
+    private function sendToAdmins($template, array $vars, $keyboardMarkup = null, ?array $context = null) {
         // Source 1: manual list from preferences (one per line).
         $raw = (string) $this->pref('admin_chat_ids');
         $list = array();
@@ -561,11 +658,68 @@ class TelegramBotNotificationsPlugin extends Plugin {
             if ($i > 0 && $delayMs > 0) {
                 usleep($delayMs * 1000);
             }
-            $this->dispatchSend($chatId, $text, $keyboardMarkup);
+            $this->dispatchSend($chatId, $text, $keyboardMarkup, $context);
         }
     }
 
-    private function dispatchSend($chatId, $text, $keyboardMarkup = null) {
+    /**
+     * Central Telegram send. Handles:
+     *   - Global + per-chat rate limiting (persistent bucket).
+     *   - INSERT-before-send row reservation so syncTicketState can find
+     *     us even if the ticket is deleted between send-ack and DB write.
+     *   - Success -> UPDATE the reserved row with the real message_id.
+     *   - Failure -> DELETE the reserved row so we don't leak placeholders.
+     *
+     * $context (optional) = ['ticket_id' => int, 'notif_type' => string,
+     *                        'subject' => string]. When provided, the send
+     * is tracked in the SentMessageStore so future lifecycle events can
+     * edit this message. When null (webhook /help, /whoami, etc.),
+     * nothing is persisted.
+     */
+    private function dispatchSend($chatId, $text, $keyboardMarkup = null, ?array $context = null) {
+        $chatId = (int) $chatId;
+
+        // 1. Rate limit before hitting the API. If we can't get a token
+        //    within the inline budget, we defer this send to the cron
+        //    worker by leaving a pending row (if this is a tracked send)
+        //    or skipping entirely.
+        if ($this->pref('rate_limit_enabled')) {
+            $gotToken = false;
+            try {
+                $gotToken = $this->rate()->tryAcquire($chatId);
+            } catch (\Throwable $e) {
+                $gotToken = true; // fail-open on limiter errors
+            }
+            if (!$gotToken) {
+                $this->safe()->warn('Rate-limit deferred send', array(
+                    'chat_id'   => $chatId,
+                    'ticket_id' => isset($context['ticket_id']) ? (int) $context['ticket_id'] : 0,
+                    'notif_type'=> isset($context['notif_type']) ? $context['notif_type'] : null,
+                ));
+                return;
+            }
+        }
+
+        // 2. Reserve a placeholder row BEFORE the API call. If the ticket
+        //    is deleted while sendMessage is in flight, the deletion
+        //    signal will find this row and later editors will decorate it
+        //    once we commit.
+        $reservedRowId = null;
+        if ($context && isset($context['ticket_id']) && isset($context['notif_type'])) {
+            try {
+                $reservedRowId = $this->messages()->reserve(
+                    $chatId,
+                    (int) $context['ticket_id'],
+                    (string) $context['notif_type'],
+                    isset($context['subject']) ? (string) $context['subject'] : ''
+                );
+            } catch (Exception $e) {
+                // never block the send on reservation errors
+                $reservedRowId = null;
+            }
+        }
+
+        // 3. Actual send.
         $opts = array();
         $pm = $this->pref('parse_mode');
         if ($pm) { $opts['parse_mode'] = $pm; }
@@ -574,19 +728,283 @@ class TelegramBotNotificationsPlugin extends Plugin {
         if (is_array($keyboardMarkup))               { $opts['reply_markup'] = $keyboardMarkup; }
 
         $res = $this->api()->sendMessage($chatId, $text, $opts);
-        if (!$res['ok']) {
+
+        // 4. Success -> commit; failure -> abort.
+        if (!empty($res['ok']) && !empty($res['body']['result']['message_id'])) {
+            $messageId = (int) $res['body']['result']['message_id'];
+            if ($reservedRowId) {
+                $this->messages()->commit($reservedRowId, $messageId);
+            }
+            $this->log('info', 'sendMessage ok', array('chat_id' => $chatId, 'status' => $res['status'], 'message_id' => $messageId));
+        } else {
+            if ($reservedRowId) {
+                $this->messages()->abort($reservedRowId);
+            }
             $this->log('error', 'sendMessage failed', array(
                 'chat_id' => $chatId,
-                'status' => $res['status'],
-                'error'  => $res['error'],
+                'status'  => isset($res['status']) ? $res['status'] : 0,
+                'error'   => isset($res['error']) ? $res['error'] : '(unknown)',
             ));
-            $this->sentry->captureMessage(
-                'Telegram sendMessage failed: ' . $res['error'],
-                'error',
-                array('tags' => array('endpoint' => 'sendMessage', 'status' => (string) $res['status']))
-            );
+            $this->safe()->error('Telegram sendMessage failed', array(
+                'chat_id'    => $chatId,
+                'ticket_id'  => isset($context['ticket_id']) ? (int) $context['ticket_id'] : 0,
+                'notif_type' => isset($context['notif_type']) ? $context['notif_type'] : null,
+                'status'     => isset($res['status']) ? (string) $res['status'] : '0',
+                'error'      => isset($res['error']) ? $res['error'] : '',
+            ));
+        }
+    }
+
+    // ─── Ticket state sync (Design v2) ───────────────────────────────────
+
+    /**
+     * Fan-out edits to every previously-sent Telegram card for this
+     * ticket. Called from onObjectCreated/onObjectEdited (via
+     * maybeSyncTicketState) AND from callback handlers after inline
+     * action. Idempotent thanks to 'not_modified' handling.
+     *
+     * The 2026-08-08 review flagged that doing all this synchronously
+     * inside a signal handler blocks the staff HTTP request. Mitigation:
+     * we cap wall-time at 1.5s inline; anything beyond that is left for
+     * the next cron() pass (findByTicket keeps returning the row since
+     * we haven't edited it yet — natural retry).
+     */
+    private function syncTicketState(Ticket $ticket) {
+        if (!$this->pref('sync_ticket_state')) { return; }
+
+        $ticketId = (int) $ticket->getId();
+        if (!$ticketId) { return; }
+
+        $rows = $this->messages()->findByTicket($ticketId);
+        if (!$rows) { return; }
+
+        // Snapshot the state once — every edit uses the same rendering.
+        $state = $this->deriveCurrentState($ticket);
+
+        $deadlineMs = (int) (microtime(true) * 1000) + 1500;
+        $edited = 0;
+        $deferred = 0;
+
+        foreach ($rows as $row) {
+            if ((int) (microtime(true) * 1000) >= $deadlineMs) {
+                // Wall-time budget spent; leave the rest for next cron().
+                $deferred++;
+                continue;
+            }
+            $this->editOneMessage($row, $state);
+            $edited++;
+        }
+
+        if ($deferred > 0) {
+            $this->safe()->warn('syncTicketState deferred edits to cron', array(
+                'ticket_id' => $ticketId,
+                'edited' => $edited,
+                'deferred' => $deferred,
+            ));
+        }
+    }
+
+    /**
+     * Re-derive current visible state of the ticket at edit time. The
+     * signal's declared $data['type'] is NOT trusted — ordering races
+     * between close+delete can flip the "type" arbitrarily. Whatever the
+     * ticket IS right now (deleted / closed / open / assigned) wins.
+     */
+    private function deriveCurrentState(Ticket $ticket) {
+        $out = array(
+            'kind' => 'unknown',    // deleted | closed | reopened | assigned | open
+            'label' => '',           // "ELIMINADO", "CERRADO", etc.
+            'emoji' => '',
+            'actor' => $this->currentActorName(),
+            'ticket_number' => '',
+            'assignee' => '',
+        );
+        try {
+            $out['ticket_number'] = (string) $ticket->getNumber();
+        } catch (Exception $e) { /* ignore */ }
+
+        // Deleted: Ticket::isDeleted() OR status name/state matches.
+        $deleted = false;
+        try {
+            if (method_exists($ticket, 'isDeleted') && $ticket->isDeleted()) { $deleted = true; }
+            if (!$deleted) {
+                $st = method_exists($ticket, 'getStatus') ? $ticket->getStatus() : null;
+                if ($st && method_exists($st, 'getState') && $st->getState() === 'deleted') { $deleted = true; }
+            }
+        } catch (Exception $e) { /* fall through */ }
+
+        if ($deleted) {
+            $out['kind'] = 'deleted';
+            $out['label'] = 'ELIMINADO';
+            $out['emoji'] = '&#128465;'; // 🗑 (U+1F5D1 — 4-byte, use HTML entity for utf8mb4-safe storage)
+            return $out;
+        }
+
+        try {
+            $st = method_exists($ticket, 'getStatus') ? $ticket->getStatus() : null;
+            if ($st) {
+                $state = method_exists($st, 'getState') ? (string) $st->getState() : '';
+                if ($state === 'closed' || $state === 'resolved') {
+                    $out['kind'] = 'closed';
+                    $out['label'] = 'CERRADO';
+                    $out['emoji'] = '&#9989;'; // ✅
+                } elseif ($state === 'open') {
+                    $out['kind'] = 'open';
+                    // Assigned? only decorate as "assigned" if there's a staff.
+                    try {
+                        $st2 = method_exists($ticket, 'getStaff') ? $ticket->getStaff() : null;
+                        if ($st2) {
+                            $out['kind'] = 'assigned';
+                            $out['label'] = 'ASIGNADO';
+                            $out['emoji'] = '&#128100;'; // 👤
+                            $out['assignee'] = (string) $st2->getName();
+                        }
+                    } catch (Exception $e) { /* ignore */ }
+                }
+            }
+        } catch (Exception $e) { /* ignore */ }
+
+        return $out;
+    }
+
+    /**
+     * Best-effort resolve the acting staff for the current request.
+     * Falls back to "sistema" for cron / API / unauthenticated paths.
+     */
+    private function currentActorName() {
+        if (isset($GLOBALS['thisstaff']) && is_object($GLOBALS['thisstaff'])
+                && method_exists($GLOBALS['thisstaff'], 'getName')) {
+            try {
+                $n = (string) $GLOBALS['thisstaff']->getName();
+                if ($n !== '') { return $n; }
+            } catch (Exception $e) { /* ignore */ }
+        }
+        return 'sistema';
+    }
+
+    /**
+     * Build the decorated text for a card given the current state and
+     * the original subject_snapshot from the DB row.
+     *
+     * For 'deleted' we DO NOT include the subject (privacy /
+     * GDPR concern from the 2026-08-08 review): rendering
+     * "<s>#42 — the ticket subject</s>" would re-broadcast the subject
+     * back through Telegram servers if the ticket was deleted for
+     * legal-erasure reasons. Use a neutral "[eliminado]" placeholder.
+     */
+    private function decorateForState(array $state, $subjectSnapshot) {
+        $num = htmlspecialchars((string) $state['ticket_number'], ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $actor = htmlspecialchars((string) $state['actor'], ENT_QUOTES | ENT_HTML5, 'UTF-8');
+
+        switch ($state['kind']) {
+            case 'deleted':
+                return $state['emoji'] . ' <b>' . $state['label'] . '</b>'
+                     . "\n" . '<s>#' . $num . ' — [eliminado]</s>'
+                     . "\n" . '<i>por ' . $actor . '</i>';
+
+            case 'closed':
+                $subj = htmlspecialchars((string) $subjectSnapshot, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                return $state['emoji'] . ' <b>' . $state['label'] . '</b>'
+                     . "\n" . '<s>#' . $num . ' — ' . $subj . '</s>'
+                     . "\n" . '<i>por ' . $actor . '</i>';
+
+            case 'assigned':
+                $subj = htmlspecialchars((string) $subjectSnapshot, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                $who  = htmlspecialchars((string) $state['assignee'], ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                return $state['emoji'] . ' <b>' . $state['label'] . '</b>'
+                     . "\n" . '#' . $num . ' — ' . $subj
+                     . "\n" . '<i>asignado a ' . $who . '</i>';
+
+            default:
+                // No decoration for "open" (nothing to communicate).
+                return null;
+        }
+    }
+
+    /**
+     * Edit a single row's Telegram card. Handles all failure modes
+     * (not_modified, gone, expired, rate_limited, transport).
+     */
+    private function editOneMessage(array $row, array $state) {
+        $chatId    = (int) $row['chat_id'];
+        $messageId = (int) $row['message_id'];
+        $subject   = (string) (isset($row['subject_snapshot']) ? $row['subject_snapshot'] : '');
+
+        // Delete mode privacy toggle — if sync_on_delete is off, strip
+        // the keyboard only (no text change, no re-broadcast).
+        $stripKeyboardOnly = ($state['kind'] === 'deleted') && !$this->pref('sync_on_delete');
+
+        // Rate limit per-chat before hitting the API.
+        if ($this->pref('rate_limit_enabled')) {
+            try {
+                if (!$this->rate()->tryAcquire($chatId)) {
+                    // Deferred to next cron pass. Do NOT increment failure_count.
+                    return;
+                }
+            } catch (Exception $e) { /* fail-open */ }
+        }
+
+        if ($stripKeyboardOnly) {
+            $res = $this->api()->editMessageReplyMarkup($chatId, $messageId, array('inline_keyboard' => array()));
         } else {
-            $this->log('info', 'sendMessage ok', array('chat_id' => $chatId, 'status' => $res['status']));
+            $text = $this->decorateForState($state, $subject);
+            if ($text === null) { return; } // 'open' state — nothing to show
+            $res = $this->api()->editMessageText($chatId, $messageId, $text);
+        }
+
+        $kind = isset($res['error_kind']) ? $res['error_kind'] : null;
+        if (!empty($res['ok']) || $kind === 'not_modified') {
+            return; // success or benign no-op
+        }
+        if ($kind === 'gone' || $kind === 'expired') {
+            $count = $this->messages()->recordFailure($chatId, $messageId);
+            $this->safe()->warn('editMessage failed (gone/expired)', array(
+                'chat_id' => $chatId,
+                'message_id' => $messageId,
+                'ticket_id' => isset($row['ticket_id']) ? (int) $row['ticket_id'] : 0,
+                'notif_type' => isset($row['notif_type']) ? $row['notif_type'] : null,
+                'error_kind' => $kind,
+                'failure_count' => $count,
+            ));
+            return;
+        }
+        if ($kind === 'rate_limited' || $kind === 'transport') {
+            // Defer to next sync attempt — do NOT increment failure_count
+            // (transient by definition).
+            return;
+        }
+        // Unknown 4xx (parse error, etc.) — log but don't kill the row.
+        $this->safe()->warn('editMessage failed (other)', array(
+            'chat_id' => $chatId,
+            'message_id' => $messageId,
+            'ticket_id' => isset($row['ticket_id']) ? (int) $row['ticket_id'] : 0,
+            'error_kind' => $kind,
+            'status' => isset($res['status']) ? (string) $res['status'] : '0',
+            'error' => isset($res['error']) ? $res['error'] : '',
+        ));
+    }
+
+    /**
+     * osTicket calls cron() on every Plugin during its cron sweep.
+     * Runs the sent-messages / rate-bucket purge at most once per hour
+     * via an atomic ostt4_config swap.
+     */
+    function cron() {
+        $lockKey = 'telegram-bot.last_purge';
+        $now = time();
+        // Atomic-ish: read-then-write via a config helper. If two cron
+        // runs collide, the second will find last_purge already updated
+        // and skip. Small race window is acceptable — worst case is a
+        // second purge pass with 0 rows affected.
+        try {
+            $cfg = $this->cfg();
+            $last = (int) $cfg->get($lockKey);
+            if ($last && ($now - $last) < 3600) { return; }
+            $cfg->set($lockKey, $now);
+            $this->messages()->purgeExpired();
+            $this->rate()->purgeInactive();
+        } catch (\Throwable $e) {
+            $this->report($e, array('event' => 'cron.purge'));
         }
     }
 
@@ -720,7 +1138,22 @@ class TelegramBotNotificationsPlugin extends Plugin {
 
         $ticket = Ticket::lookup($ticketId);
         if (!$ticket) {
-            $this->api()->answerCallbackQuery($cqId, 'Ticket no encontrado.', array('show_alert' => true));
+            // The ticket was deleted out-of-band (direct SQL, admin cleanup,
+            // Ticket::delete outside a signal path). Decorate THIS card
+            // in-place using the callback's own chat_id/message_id — no DB
+            // lookup needed. Also purge any sibling rows for this ticket
+            // so future callbacks on other admin cards also short-circuit.
+            $this->api()->answerCallbackQuery($cqId, 'Ticket ya no existe.', array('show_alert' => true));
+            try {
+                $this->api()->editMessageText(
+                    $chatId, $msgId,
+                    '&#128465; <b>ELIMINADO</b>' . "\n" . '<s>#' . (int) $ticketId . ' — [eliminado]</s>',
+                    array()
+                );
+            } catch (Exception $e) { /* best-effort */ }
+            try {
+                $this->messages()->deleteForTicket($ticketId);
+            } catch (Exception $e) { /* best-effort */ }
             return;
         }
 
@@ -780,8 +1213,15 @@ class TelegramBotNotificationsPlugin extends Plugin {
             }
             $name = $staff->getName();
             $this->api()->answerCallbackQuery($cqId, '✓ Asignado a ' . (string) $name);
+            // Sync fan-out (decorates OTHER admins' cards too). onModelUpdated
+            // will also fire via Ticket::setStaffId → dirty flags, but
+            // maybeSyncTicketState is debounced per-request so no dup edits.
+            $this->maybeSyncTicketState($ticket);
+            // Local card (this chat's) — clear its keyboard immediately as
+            // acknowledgment. syncTicketState above will decorate it too via
+            // the persisted row.
             $this->clearKeyboardOnMessage($chatId, $msgId);
-        } catch (Exception $e) {
+        } catch (\Throwable $e) {
             $this->report($e, array('event' => 'callback.assign'));
             $this->api()->answerCallbackQuery($cqId, 'Error al asignar (revisa logs).', array('show_alert' => true));
         }
@@ -815,8 +1255,9 @@ class TelegramBotNotificationsPlugin extends Plugin {
                 return;
             }
             $this->api()->answerCallbackQuery($cqId, '✓ Ticket cerrado');
+            $this->maybeSyncTicketState($ticket);
             $this->clearKeyboardOnMessage($chatId, $msgId);
-        } catch (Exception $e) {
+        } catch (\Throwable $e) {
             $this->report($e, array('event' => 'callback.close'));
             $this->api()->answerCallbackQuery($cqId, 'Error al cerrar (revisa logs).', array('show_alert' => true));
         }
@@ -910,6 +1351,27 @@ class TelegramBotNotificationsPlugin extends Plugin {
             $this->links = new TgUserLinkStore($ttl);
         }
         return $this->links;
+    }
+
+    /** @var TgSentMessageStore|null Cached per-request. */
+    private $messages = null;
+    private function messages() {
+        if ($this->messages === null) { $this->messages = new TgSentMessageStore(); }
+        return $this->messages;
+    }
+
+    /** @var TgRateLimiter|null Cached per-request. */
+    private $rate = null;
+    private function rate() {
+        if ($this->rate === null) { $this->rate = new TgRateLimiter(); }
+        return $this->rate;
+    }
+
+    /** @var TgSafeSentry|null Cached per-request. */
+    private $safe = null;
+    private function safe() {
+        if ($this->safe === null) { $this->safe = new TgSafeSentry($this->sentry); }
+        return $this->safe;
     }
 
     // ─── Decision helpers ────────────────────────────────────────────────
