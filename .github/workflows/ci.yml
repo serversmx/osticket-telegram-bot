@@ -32,13 +32,7 @@ jobs:
           done
 
       - name: Unit tests
-        run: |
-          set -e
-          php tests/TelegramFormatterTest.php
-          php tests/InlineKeyboardBuilderTest.php
-          php tests/SentryReporterTest.php
-          php tests/LogRedactorTest.php
-          php tests/LogRedactorTelegramKeysTest.php
+        run: php tests/run-all.php
 
   docker-build:
     name: Docker build smoke

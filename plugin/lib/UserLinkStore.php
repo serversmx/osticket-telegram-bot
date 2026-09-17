@@ -22,6 +22,15 @@
  * The webhook handler consumes tokens (deletes on use) and writes to
  * telegram_links on success.
  *
+ *   <prefix>telegram_link_offers — one row per address that received the
+ *   invitation email, used to throttle it (per-address cooldown + hourly cap):
+ *
+ *     email_hash CHAR(40) PRIMARY KEY   (sha1 of the lowercase address, +tag removed)
+ *     email      VARCHAR(255) NOT NULL
+ *     user_id    INT UNSIGNED NOT NULL
+ *     last_sent  INT UNSIGNED NOT NULL
+ *     sent_count INT UNSIGNED NOT NULL
+ *
  * @license GPL-2.0-or-later
  */
 class TgUserLinkStore {
@@ -29,6 +38,8 @@ class TgUserLinkStore {
     private $tableLinks;
     private $tableTokens;
     private $tablesReady = false;
+    private $tableOffers;
+    private $offersTableReady = false;
     // Parallel set of tables for staff (admin) linking — same schema, different
     // primary-key meaning. Auto-created lazily on first use, like the user tables.
     private $tableStaffLinks;
@@ -40,6 +51,7 @@ class TgUserLinkStore {
     public function __construct($tokenTtl = 900) {
         $this->tableLinks       = TABLE_PREFIX . 'telegram_links';
         $this->tableTokens      = TABLE_PREFIX . 'telegram_link_tokens';
+        $this->tableOffers      = TABLE_PREFIX . 'telegram_link_offers';
         $this->tableStaffLinks  = TABLE_PREFIX . 'telegram_staff_links';
         $this->tableStaffTokens = TABLE_PREFIX . 'telegram_staff_link_tokens';
         $this->tokenTtl         = (int) $tokenTtl;
@@ -140,6 +152,41 @@ class TgUserLinkStore {
     /** Returns true when the user already has a link. */
     public function isUserLinked($userId) {
         return $this->chatIdForUser($userId) !== null;
+    }
+
+    // ─── Invitation email throttle ───────────────────────────────────────
+
+    /** Unix time the invitation was last emailed to $email, or null if never. */
+    public function lastOfferSentAt($email) {
+        $this->ensureOffersTable();
+        $res = db_query('SELECT last_sent FROM ' . $this->tableOffers
+            . ' WHERE email_hash="' . $this->offerKey($email) . '" LIMIT 1');
+        if (!$res) { return null; }
+        $row = db_fetch_array($res);
+        return $row ? (int) $row['last_sent'] : null;
+    }
+
+    /** Number of invitation emails sent at or after $since (unix time). */
+    public function offersSentSince($since) {
+        $this->ensureOffersTable();
+        $res = db_query('SELECT COUNT(*) AS n FROM ' . $this->tableOffers
+            . ' WHERE last_sent >= ' . (int) $since);
+        if (!$res) { return 0; }
+        $row = db_fetch_array($res);
+        return $row ? (int) $row['n'] : 0;
+    }
+
+    /** Remember that the invitation was just emailed to $email. */
+    public function recordOfferSent($email, $userId) {
+        $this->ensureOffersTable();
+        db_query('INSERT INTO ' . $this->tableOffers
+            . ' (email_hash, email, user_id, last_sent, sent_count) VALUES ('
+            . '"' . $this->offerKey($email) . '", '
+            . '"' . $this->escape(substr(strtolower(trim((string) $email)), 0, 255)) . '", '
+            . (int) $userId . ', '
+            . time() . ', 1)'
+            . ' ON DUPLICATE KEY UPDATE user_id=VALUES(user_id),'
+            . ' last_sent=VALUES(last_sent), sent_count=sent_count+1');
     }
 
     /** Drop expired tokens. Safe to call periodically. */
@@ -270,6 +317,25 @@ class TgUserLinkStore {
             . ' KEY idx_user (user_id)'
             . ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
         $this->tablesReady = true;
+    }
+
+    private function ensureOffersTable() {
+        if ($this->offersTableReady) { return; }
+        db_query('CREATE TABLE IF NOT EXISTS ' . $this->tableOffers . ' ('
+            . ' email_hash CHAR(40) NOT NULL PRIMARY KEY,'
+            . ' email VARCHAR(255) NOT NULL,'
+            . ' user_id INT UNSIGNED NOT NULL,'
+            . ' last_sent INT UNSIGNED NOT NULL,'
+            . ' sent_count INT UNSIGNED NOT NULL DEFAULT 1,'
+            . ' KEY idx_last_sent (last_sent)'
+            . ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
+        $this->offersTableReady = true;
+    }
+
+    /** sha1 of the lowercase address with any +tag removed (support+123@ ≡ support@). */
+    private function offerKey($email) {
+        $email = strtolower(trim((string) $email));
+        return sha1(preg_replace('/\+[^@]*@/', '@', $email));
     }
 
     private function ensureStaffTables() {

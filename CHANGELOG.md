@@ -7,7 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Invitation email throttles.** A per-address cooldown (`link_offer_cooldown_days`, default 30, minimum 1; `+tag` variants count as the same address) and a global hourly cap (`link_offer_max_per_hour`, default 10), backed by the auto-created `<prefix>telegram_link_offers` table, plus an admin list of extra domains or full addresses to never mail (`link_offer_skip_domains`). Editable in the **Vinculación clientes** tab; an empty field keeps the default instead of disabling the limit.
+- **Robot-aware osTicket auto-response** (`suppress_robot_autoresponse`, on by default). A `ticket.create.validated` handler runs the same guard and sets `$vars['autorespond'] = false` for robots and likely forged senders, so the core "new ticket" auto-response stops producing the same backscatter as the invitation did.
+
+### Changed
+- CI runs `php tests/run-all.php`, so every test file (including `SafeSentryTest` and the new `InviteGuardTest`) is exercised.
+
 ### Fixed
+- **Invitation email loop with transactional senders (Amazon, PayPal, help desks) and backscatter to spam.** A return notification from `return@amazon.com` — sent through Amazon SES without an `Auto-Submitted` header — got the invitation, Amazon's auto-responder answered from `nobody@bounces.amazon.com`, and the answer opened a new ticket; spam and phishing senders were invited too. `emailLinkOffer()` now asks the new `TgInviteGuard` first and skips:
+  - replies to the invitation (subject marker, or `In-Reply-To`/`References` pointing at the invitation's Message-ID) and auto-reply subjects (`Automatic reply:`, `Respuesta automática:`, `Fuera de la oficina:`…);
+  - robot mailboxes (`no-reply`/`no_reply`/`no-responder` anywhere, exact role mailboxes such as `nobody@`, `notificaciones@`, `wordpress@`, `returns@` — `news.carlos@` stays human), bulk-sender subdomains (`updates.`, `bounces.`, `reply1.`…), local parts mirrored as a subdomain (`abc@abc.spamhost.tld`), zero-width characters in the sender name or subject, malformed domains;
+  - the helpdesk's own domains, notification-only brand domains (Amazon, PayPal, Mercado Libre/Pago, Meta, Google, Apple, Microsoft…) and the admin skip list;
+  - automation headers of the email that opened the ticket (`Auto-Submitted` ≠ `no`, `Precedence`, `List-Unsubscribe`, `Feedback-ID`, `X-SES-Outgoing`, `X-Amazon-Auto-Reply`, Exchange inbox-rule replies, ESP headers, DSN markers, the receiving MTA's own spam verdict), except `Feedback-ID`/`X-SES-Outgoing` on personal mailboxes (Amazon WorkMail, ProtonMail);
+  - self-addressed Bcc blasts and senders whose SpamAssassin report shows neither aligned DKIM nor SPF for the From domain (fails open when the checks are missing or inconclusive).
+
+  Replayed against 37,558 historical email tickets before release. The invitation also states that replies to it are not received. Recommended companion: an osTicket email filter rejecting subjects that contain `Vincula tu Telegram`.
 - **Telegram `400 Bad Request: can't parse entities: Unmatched end tag`** when a ticket body included styled HTML spans (e.g. `<span style="color:red">…</span>`). The previous `htmlToTelegram()` stripped the *open* `<span …>` but left the matching `</span>` dangling, which crashed Telegram's HTML parser. The sanitizer now walks the string with a depth counter: tg-spoiler spans are preserved verbatim, styled spans collapse to their inner text, and orphan/unbalanced `</span>` tags are dropped. Regression tests cover styled, mixed, nested and unbalanced cases.
 - **Bounce/auto-reply loop from `emailLinkOffer()`.** When a ticket was created from a `Mailer-Daemon` bounce or a `do-not-reply@…` autoresponder, the plugin would mail the post-ticket invite to that address, the MTA would bounce it again, osTicket would create a new ticket from the bounce, and the cycle repeated. `emailLinkOffer()` now skips senders matching automated-mailbox patterns (`mailer-daemon@`, `postmaster@`, `no-?reply@`, `do-?not-?reply@`, `bounces?@`, `automated@`, `system@`, `abuse@`, `root@`, `daemon@`) and any address inside `@bounces.*` / `*.bounces.*` zones. Pair this with the osTicket email filter that rejects bounces at ticket-creation time (recommended) for a defence in depth.
 

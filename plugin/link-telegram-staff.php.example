@@ -194,9 +194,22 @@ if ($action === 'save_linking' && $isAdmin && $_SERVER['REQUEST_METHOD'] === 'PO
     $ttl = (int) preg_replace('/\D+/', '', (string) (isset($_POST['link_token_ttl']) ? $_POST['link_token_ttl'] : '900'));
     if ($ttl < 60)    { $ttl = 60; }
     if ($ttl > 86400) { $ttl = 86400; }
+    // An empty or non-numeric field keeps the default instead of silently
+    // disabling a limit.
+    $defs = TelegramBotNotificationsPlugin::prefDefaults();
+    $num = function ($key, $min, $max) use ($defs) {
+        $raw = trim((string) (isset($_POST[$key]) ? $_POST[$key] : ''));
+        $n = ctype_digit($raw) ? (int) $raw : (int) $defs[$key];
+        return (string) max($min, min($max, $n));
+    };
+    $skipList = TgInviteGuard::parseSkipList(isset($_POST['link_offer_skip_domains']) ? $_POST['link_offer_skip_domains'] : '');
     $payload = array(
-        'send_link_offer_email' => !empty($_POST['send_link_offer_email']) ? '1' : '0',
-        'link_token_ttl'        => (string) $ttl,
+        'send_link_offer_email'       => !empty($_POST['send_link_offer_email']) ? '1' : '0',
+        'link_token_ttl'              => (string) $ttl,
+        'link_offer_cooldown_days'    => $num('link_offer_cooldown_days', 1, 365),
+        'link_offer_max_per_hour'     => $num('link_offer_max_per_hour', 0, 1000),
+        'link_offer_skip_domains'     => implode("\n", $skipList),
+        'suppress_robot_autoresponse' => !empty($_POST['suppress_robot_autoresponse']) ? '1' : '0',
     );
     tg_save_keys($namespace, $payload);
     $okMsg = 'Preferencias de vinculación guardadas.';
@@ -558,6 +571,38 @@ $botUsername = (string) $pluginCfg->get('bot_username');
                 <div>
                     <input type="checkbox" id="send_link_offer_email" name="send_link_offer_email" value="1" <?php echo $on('send_link_offer_email', '1') ? 'checked' : ''; ?>>
                     <span style="opacity:0.75;">Después de crear un ticket, si el cliente todavía no tiene Telegram vinculado, le mandamos un correo con un botón <em>Vincular mi Telegram</em>. Funciona tanto para clientes logueados como para visitantes (osTicket crea siempre un User al recibir el ticket).</span>
+                </div>
+            </div>
+
+            <div class="tg-section-label">Protección anti-rebotes</div>
+            <div class="tg-form-grid">
+                <label>Remitentes automáticos</label>
+                <div>
+                    <span style="opacity:0.75;">La invitación no se envía a robots: bounces, auto-respuestas (incluidas las respuestas a la propia invitación), newsletters y correos transaccionales (headers como <code>Auto-Submitted</code>, <code>List-Unsubscribe</code>, <code>Feedback-ID</code>, <code>X-SES-Outgoing</code>), buzones tipo <code>no-reply@</code> / <code>nobody@</code> / <code>notificaciones@</code>, dominios de marcas (Amazon, PayPal, Mercado Libre…) y dominios propios del helpdesk. Si el servidor agrega el reporte de SpamAssassin, tampoco se envía a remitentes cuyo SPF/DKIM no valida la dirección (probable suplantación). Así no se generan loops ni backscatter que dañe la reputación de la IP.</span>
+                </div>
+
+                <label for="suppress_robot_autoresponse">Auto-respuesta de osTicket</label>
+                <div>
+                    <input type="checkbox" id="suppress_robot_autoresponse" name="suppress_robot_autoresponse" value="1" <?php echo $on('suppress_robot_autoresponse', '1') ? 'checked' : ''; ?>>
+                    <span style="opacity:0.75;">Aplicar las mismas reglas a la auto-respuesta de ticket nuevo de osTicket: no se envía a los remitentes anteriores.</span>
+                </div>
+
+                <label for="link_offer_cooldown_days">Días entre invitaciones</label>
+                <div>
+                    <input type="number" id="link_offer_cooldown_days" name="link_offer_cooldown_days" value="<?php echo Format::htmlchars($g('link_offer_cooldown_days', '30')); ?>" min="1" max="365" style="max-width:200px;">
+                    <div class="tg-help" style="opacity:0.7;font-size:0.85em;margin-top:4px;">Una misma dirección recibe como máximo una invitación en este periodo, aunque abra varios tickets. Mínimo 1 día.</div>
+                </div>
+
+                <label for="link_offer_max_per_hour">Máximo de invitaciones por hora</label>
+                <div>
+                    <input type="number" id="link_offer_max_per_hour" name="link_offer_max_per_hour" value="<?php echo Format::htmlchars($g('link_offer_max_per_hour', '10')); ?>" min="0" max="1000" style="max-width:200px;">
+                    <div class="tg-help" style="opacity:0.7;font-size:0.85em;margin-top:4px;">Tope global. Frena oleadas de spam que abren muchos tickets seguidos. <code>0</code> = sin límite.</div>
+                </div>
+
+                <label for="link_offer_skip_domains">Dominios excluidos</label>
+                <div>
+                    <textarea id="link_offer_skip_domains" name="link_offer_skip_domains" rows="4" style="max-width:420px;width:100%;" placeholder="ejemplo.com&#10;avisos@banco.com.mx"><?php echo Format::htmlchars($g('link_offer_skip_domains', '')); ?></textarea>
+                    <div class="tg-help" style="opacity:0.7;font-size:0.85em;margin-top:4px;">Dominios o direcciones completas, uno por línea. Los dominios incluyen sus subdominios. Se suman a la lista integrada de marcas.</div>
                 </div>
             </div>
 

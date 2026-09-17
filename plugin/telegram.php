@@ -13,6 +13,7 @@ require_once dirname(__FILE__) . '/lib/TelegramBotClient.php';
 require_once dirname(__FILE__) . '/lib/TelegramFormatter.php';
 require_once dirname(__FILE__) . '/lib/InlineKeyboardBuilder.php';
 require_once dirname(__FILE__) . '/lib/UserLinkStore.php';
+require_once dirname(__FILE__) . '/lib/InviteGuard.php';
 require_once dirname(__FILE__) . '/lib/SentryReporter.php';
 require_once dirname(__FILE__) . '/lib/LogRedactor.php';
 require_once dirname(__FILE__) . '/lib/SentMessageStore.php';
@@ -63,6 +64,13 @@ class TelegramBotNotificationsPlugin extends Plugin {
             // ticket is created (see emailLinkOffer below). Opt-out = /unlink.
             'link_token_ttl'                => '900',
             'send_link_offer_email'         => '1',
+            // Anti-bounce protection (see TgInviteGuard + TgUserLinkStore).
+            // Cooldown is at least 1 day; an hourly cap of 0 disables it.
+            'link_offer_cooldown_days'      => '30',
+            'link_offer_max_per_hour'       => '10',
+            'link_offer_skip_domains'       => '',
+            // Also stop osTicket's own new-ticket auto-response to robots.
+            'suppress_robot_autoresponse'   => '1',
             // Event matrix
             'evt_ticket_created__client'    => '1',
             'evt_ticket_created__admin'     => '1',
@@ -168,6 +176,9 @@ class TelegramBotNotificationsPlugin extends Plugin {
 
         if ($this->anyOn('evt_ticket_created__client', 'evt_ticket_created__admin')) {
             Signal::connect('ticket.created', array($this, 'onTicketCreated'));
+        }
+        if ($this->pref('suppress_robot_autoresponse')) {
+            Signal::connect('ticket.create.validated', array($this, 'onTicketCreateValidated'));
         }
         if ($this->anyOn('evt_user_reply__admin', 'evt_staff_reply__client', 'evt_staff_reply__admin')) {
             Signal::connect('threadentry.created', array($this, 'onThreadEntryCreated'));
@@ -405,31 +416,34 @@ class TelegramBotNotificationsPlugin extends Plugin {
         }
         if (!$email || !preg_match('/^[^\s@]+@[^\s@]+$/', $email)) { return; }
 
-        // Skip automated/non-deliverable senders. Mailing them an invite is
-        // guaranteed to bounce, which loops back into the support inbox as a
-        // brand-new "Mail delivery failed" ticket. Anything from a bounces
-        // mailbox, postmaster, mailer-daemon, or a do-not-reply alias is a
-        // robot that can't read the invite anyway.
-        $emailLower = strtolower($email);
-        if (preg_match(
-                '/^(mailer-daemon|postmaster|no-?reply|noreply|do-?not-?reply|donotreply|bounces?|automated|system|abuse|root|daemon)@/',
-                $emailLower
-            )
-            || strpos($emailLower, '@bounces.') !== false
-            || strpos($emailLower, 'mailer-daemon@') !== false
-            || strpos($emailLower, '.bounces.') !== false
-        ) {
+        // Only invite humans. Mailing a robot is at best useless and at worst
+        // a loop: auto-responders (Amazon, help desks) answer the invite, the
+        // answer becomes a new ticket, which gets another invite. Mailing a
+        // spam sender is backscatter that gets the server IP blocklisted.
+        $ticketSubject = '';
+        try { $ticketSubject = (string) $ticket->getSubject(); } catch (Exception $e) {}
+        $name = '';
+        try { $name = (string) $ticket->getName(); } catch (Exception $e) {}
+        if ($name === '' && method_exists($owner, 'getName')) {
+            try { $name = (string) $owner->getName(); } catch (Exception $e) {}
+        }
+        $reason = TgInviteGuard::skipReason($email, $this->sourceEmailHeaders($ticket),
+            $this->guardContext($ticketSubject, $name));
+        if ($reason === null) {
+            $reason = $this->linkOfferThrottleReason($email);
+        }
+        if ($reason !== null) {
+            $this->log($reason === 'hourly-cap' ? 'warning' : 'info',
+                'Skipped Telegram link-offer email', array(
+                    'ticket' => (string) $ticket->getNumber(),
+                    'reason' => $reason,
+                ));
             return;
         }
 
         $url = $this->generateLinkUrl($userId);
         if (!$url) { return; }
 
-        $name = '';
-        try { $name = (string) $ticket->getName(); } catch (Exception $e) {}
-        if ($name === '' && method_exists($owner, 'getName')) {
-            try { $name = (string) $owner->getName(); } catch (Exception $e) {}
-        }
         $hello   = $name !== '' ? Format::htmlchars($name) : 'Hola';
         $number  = Format::htmlchars((string) $ticket->getNumber());
         $urlSafe = Format::htmlchars($url);
@@ -443,21 +457,153 @@ class TelegramBotNotificationsPlugin extends Plugin {
               . 'text-decoration:none;border-radius:6px;font-weight:600;">Vincular mi Telegram</a></p>'
               . '<p style="font-size:0.9em;color:#666;">El enlace se abre en la app de Telegram y solo es válido '
               . 'una vez. Si prefieres seguir recibiendo todo por email, ignora este mensaje. '
-              . 'Para desvincular más adelante, envía <code>/unlink</code> al bot.</p>';
+              . 'Para desvincular más adelante, envía <code>/unlink</code> al bot.</p>'
+              . '<p style="font-size:0.85em;color:#999;">Este es un correo automático y las respuestas a esta '
+              . 'dirección no se reciben. Si necesitas ayuda, responde al correo de tu ticket.</p>';
 
         try {
+            // Record before sending: if anything below misbehaves we'd rather
+            // skip one legitimate invite than risk mailing the same address twice.
+            $this->links()->recordOfferSent($email, $userId);
             // osTicket 1.18+ namespaces Mailer under osTicket\Mail. Use the
             // FQCN to avoid autoload trouble at signal-handler time.
-            \osTicket\Mail\Mailer::sendmail($email, $subject, $body, null, array(
+            // sendmail() already sets Auto-Submitted: auto-generated; 'autoreply'
+            // (same as core's new-ticket auto-response) adds Precedence and
+            // X-Autoreply for older responders. Headers alone don't stop
+            // non-compliant responders such as Amazon's — the guard above does.
+            $sent = \osTicket\Mail\Mailer::sendmail($email, $subject, $body, null, array(
                 'from_name' => 'Soporte',
+                'autoreply' => true,
             ));
-            $this->log('info', 'Sent Telegram link-offer email', array(
-                'ticket' => $number,
-                'email'  => $email,
-            ));
+            $this->log($sent === false ? 'warning' : 'info',
+                $sent === false ? 'Telegram link-offer email was not accepted by the mailer' : 'Sent Telegram link-offer email',
+                array('ticket' => $number, 'email' => $email));
         } catch (\Throwable $e) {
             $this->report($e, array('event' => 'link-offer-email'));
         }
+    }
+
+    /**
+     * ticket.create.validated: stop osTicket's own new-ticket auto-response
+     * when the sender is a robot or a likely forged address, using the same
+     * rules as the invitation. $vars is passed by reference and
+     * Ticket::create() honours $vars['autorespond'].
+     */
+    function onTicketCreateValidated($object, &$vars) {
+        try {
+            if (!is_array($vars) || empty($vars['email'])) { return; }
+            $reason = TgInviteGuard::skipReason(
+                (string) $vars['email'],
+                isset($vars['header']) ? (string) $vars['header'] : '',
+                $this->guardContext(
+                    isset($vars['subject']) ? (string) $vars['subject'] : '',
+                    isset($vars['name']) ? (string) $vars['name'] : ''
+                )
+            );
+            if ($reason === null) { return; }
+            $vars['autorespond'] = false;
+            $this->log('info', 'Suppressed osTicket auto-response', array('reason' => $reason));
+        } catch (\Throwable $e) {
+            $this->report($e, array('event' => 'ticket.create.validated'));
+        }
+    }
+
+    /** Context shared by every TgInviteGuard::skipReason() call. */
+    private function guardContext($subject, $name) {
+        return array(
+            'subject'       => $subject,
+            'name'          => $name,
+            'own_domains'   => $this->systemEmailDomains(),
+            'skip_list'     => TgInviteGuard::parseSkipList($this->pref('link_offer_skip_domains')),
+            'invite_sender' => $this->inviteSenderAddress(),
+        );
+    }
+
+    /**
+     * Address Mailer::sendmail() sends the invitation from: the default MTA's
+     * email, else the default system email (mirrors Mailer::__construct()).
+     */
+    private function inviteSenderAddress() {
+        global $cfg;
+        try {
+            $email = null;
+            if ($cfg && method_exists($cfg, 'getDefaultMTA') && ($mta = $cfg->getDefaultMTA())
+                    && $mta->isActive()) {
+                $email = $mta->getEmail();
+            }
+            if (!$email && $cfg) {
+                $email = $cfg->getDefaultEmail();
+            }
+            return $email ? strtolower((string) $email->getEmail()) : '';
+        } catch (\Throwable $e) {
+            return '';
+        }
+    }
+
+    /**
+     * Raw headers of the email that opened the ticket, or '' when the ticket
+     * didn't arrive by email (web form, API, staff). Headers are stored by
+     * Ticket::create() → postMessage() before ticket.created fires.
+     */
+    private function sourceEmailHeaders(Ticket $ticket) {
+        if (!defined('THREAD_ENTRY_TABLE') || !defined('THREAD_ENTRY_EMAIL_TABLE')) {
+            return '';
+        }
+        try {
+            $thread = $ticket->getThread();
+            if (!$thread) { return ''; }
+            $res = db_query('SELECT e.headers FROM ' . THREAD_ENTRY_EMAIL_TABLE . ' e'
+                . ' JOIN ' . THREAD_ENTRY_TABLE . ' te ON te.id = e.thread_entry_id'
+                . ' WHERE te.thread_id = ' . (int) $thread->getId()
+                . ' ORDER BY te.id ASC LIMIT 1');
+            $row = $res ? db_fetch_array($res) : null;
+            return $row ? (string) $row['headers'] : '';
+        } catch (\Throwable $e) {
+            return '';
+        }
+    }
+
+    /**
+     * Domains of the helpdesk's own mailboxes (never invite ourselves).
+     * Free-mail domains are excluded so a helpdesk that fetches from, say,
+     * a gmail.com mailbox doesn't stop inviting every gmail.com customer.
+     */
+    private function systemEmailDomains() {
+        $domains = array();
+        if (!defined('EMAIL_TABLE')) { return $domains; }
+        $shared = array('gmail.com', 'googlemail.com', 'hotmail.com', 'outlook.com', 'live.com',
+            'msn.com', 'yahoo.com', 'yahoo.com.mx', 'icloud.com', 'me.com', 'aol.com',
+            'proton.me', 'protonmail.com', 'zoho.com', 'gmx.com', 'mail.com', 'yandex.com');
+        try {
+            $res = db_query('SELECT email FROM ' . EMAIL_TABLE);
+            while ($res && ($row = db_fetch_array($res))) {
+                $addr = strtolower(trim((string) $row['email']));
+                $at = strrpos($addr, '@');
+                if ($at === false) { continue; }
+                $domain = substr($addr, $at + 1);
+                if ($domain !== '' && !in_array($domain, $shared, true)) {
+                    $domains[$domain] = true;
+                }
+            }
+        } catch (\Throwable $e) {}
+        return array_keys($domains);
+    }
+
+    /** 'cooldown' / 'hourly-cap' when the invitation must wait, else null. */
+    private function linkOfferThrottleReason($email) {
+        $store = $this->links();
+        // At least one day, so one address is one row per hour window and
+        // offersSentSince() counts sends.
+        $cooldownDays = max(1, (int) $this->pref('link_offer_cooldown_days'));
+        $last = $store->lastOfferSentAt($email);
+        if ($last !== null && $last > time() - $cooldownDays * 86400) {
+            return 'cooldown';
+        }
+        $maxPerHour = max(0, (int) $this->pref('link_offer_max_per_hour'));
+        if ($maxPerHour > 0 && $store->offersSentSince(time() - 3600) >= $maxPerHour) {
+            return 'hourly-cap';
+        }
+        return null;
     }
 
     function onThreadEntryCreated($entry) {
