@@ -34,6 +34,15 @@ class TgInviteGuard {
     /** Subject prefixes of out-of-office / auto-reply messages in the languages we see. */
     const AUTO_REPLY_SUBJECT = '/^\s*(automatic reply|auto[- ]?(reply|response)|respuesta autom[aá]tica|resposta autom[aá]tica|r[ée]ponse automatique|automatische antwort|out of (the )?office|fuera de (la )?oficina)\s*:/iu';
 
+    /** Envelope senders of bulk MTAs: mta132@sub017.example.com, bounces@xsmtp.example.mx. */
+    const BULK_ENVELOPE_LOCAL_PART = '/^(mta|smtp|mailer|bulk|bounce)[-_.]?\d+$/';
+
+    /**
+     * Archives and disk images: the usual malware carriers. Messages above the
+     * MTA's spam-scan size limit arrive unscanned with exactly these attached.
+     */
+    const ARCHIVE_ATTACHMENT = '/\.(rar|r\d\d|7z|zip|gz|tgz|xz|bz2|tar|ace|arj|cab|lzh|z|uue|iso|img|vhdx?)$/i';
+
     /** Zero-width and invisible characters used to dodge filters ("A​mazon"). */
     const INVISIBLE_CHARS = '/[\x{00AD}\x{034F}\x{200B}-\x{200F}\x{2060}-\x{2064}\x{FEFF}]/u';
 
@@ -116,6 +125,7 @@ class TgInviteGuard {
      *   'own_domains'   => string[] domains of the helpdesk's own mailboxes
      *   'skip_list'     => string[] admin-configured domains and full addresses to never mail
      *   'invite_sender' => address the invitation is sent from (replies to it are loops)
+     *   'attachments'   => string[] file names attached to the message
      * @return string|null
      */
     public static function skipReason($email, $headers = null, array $context = array()) {
@@ -177,7 +187,7 @@ class TgInviteGuard {
         $parsed = is_array($headers) ? self::normalizeHeaders($headers) : self::parseHeaders((string) $headers);
         if ($parsed) {
             $sender = isset($context['invite_sender']) ? (string) $context['invite_sender'] : '';
-            return self::headerReason($parsed, $email, $sender);
+            return self::headerReason($parsed, $email, $sender, $context);
         }
         return null;
     }
@@ -188,8 +198,9 @@ class TgInviteGuard {
      * @param array<string,string[]> $headers      lowercase names → values, in header order
      * @param string                 $email        the sender address
      * @param string                 $inviteSender address our invitation is sent from
+     * @param array                  $context      'attachments' as in skipReason()
      */
-    public static function headerReason(array $headers, $email = '', $inviteSender = '') {
+    public static function headerReason(array $headers, $email = '', $inviteSender = '', array $context = array()) {
         // Replying to a Message-ID we generated for the unthreaded invitation
         // means this "new ticket" is an answer to it — typically a help desk
         // acknowledgement that changed the subject.
@@ -260,7 +271,70 @@ class TgInviteGuard {
                 return 'self-addressed';
             }
         }
+        if (($reason = self::envelopeReason($headers)) !== null) {
+            return $reason;
+        }
+        if (($reason = self::recipientsReason($headers)) !== null) {
+            return $reason;
+        }
+        if (!empty($context['attachments']) && !self::wasSpamScanned($headers)) {
+            foreach ((array) $context['attachments'] as $file) {
+                if (preg_match(self::ARCHIVE_ATTACHMENT, trim((string) $file))) {
+                    return 'unscanned-archive';
+                }
+            }
+        }
         return self::authReason($headers, $email);
+    }
+
+    /**
+     * 'automated-envelope' when the envelope sender (the Return-Path our MTA
+     * recorded) is a bounce or bulk-MTA mailbox. Cold-mail campaigns send
+     * from bounces@ or mtaNNN@ and set a human-looking From / Reply-To.
+     */
+    public static function envelopeReason(array $headers) {
+        $rp = self::addressesIn((string) self::firstValue($headers, 'return-path'));
+        if (!$rp) {
+            return null;
+        }
+        $local = substr($rp[0], 0, strrpos($rp[0], '@'));
+        if (preg_match(self::SYSTEM_LOCAL_PART, $local) || preg_match(self::BULK_ENVELOPE_LOCAL_PART, $local)) {
+            return 'automated-envelope';
+        }
+        return null;
+    }
+
+    /**
+     * 'bcc-blast' when the message has no visible recipient at all (To is
+     * "undisclosed-recipients:;" or To/Cc carry no address): it reached us
+     * through Bcc, the way spam and malware campaigns are sent.
+     *
+     * Deliberately not "none of the recipients is one of our mailboxes": old
+     * brand domains and aliases forward into the help desk, and a replay over
+     * ~37k historical tickets showed thousands of customers addressed that way.
+     */
+    public static function recipientsReason(array $headers) {
+        if (!isset($headers['to']) && !isset($headers['cc'])) {
+            return null; // header block incomplete or not an email: fail open
+        }
+        $visible = '';
+        foreach (array('to', 'cc') as $h) {
+            if (isset($headers[$h])) { $visible .= ' ' . implode(',', $headers[$h]); }
+        }
+        if (stripos($visible, 'undisclosed-recipients') !== false || !self::addressesIn($visible)) {
+            return 'bcc-blast';
+        }
+        return null;
+    }
+
+    /** Whether our MTA's SpamAssassin left a verdict (it skips large messages). */
+    public static function wasSpamScanned(array $headers) {
+        foreach (array('x-spam-status', 'x-spam-flag', 'x-spam-score', 'x-ham-report', 'x-spam-report') as $h) {
+            if (isset($headers[$h])) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

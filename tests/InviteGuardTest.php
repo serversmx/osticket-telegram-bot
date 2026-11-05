@@ -301,5 +301,73 @@ assertEqual(null, TgInviteGuard::skipReason('a@empresa.example', headers(array('
 assertEqual('empresa.com.mx', TgInviteGuard::orgDomain('mail.empresa.com.mx'), 'orgDomain keeps com.mx');
 assertEqual('example.com', TgInviteGuard::orgDomain('a.b.example.com'), 'orgDomain of a generic TLD');
 
+echo "\n== 2026-11 spam wave: Bcc blasts, bulk envelopes, unscanned archives ==\n";
+$own = array('own_domains' => array('example.mx'));
+// Malware "statement of account": 2.4 MB with a .rar, above the spam-scan
+// size limit, so no X-Spam-* headers; DKIM-signed by the sender's own domain.
+$malwareBcc = headers(array(
+    'Return-Path: <erve@shipping-docs.example>',
+    'Delivered-To: sales@example.mx',
+    'From: "Shipping Ltd." <erve@shipping-docs.example>',
+    'To: undisclosed-recipients:;',
+    'Subject: SOA-SEA CARE SHIPPING-MONTH OF October/2026',
+    'Content-Type: multipart/mixed; boundary="=_42"',
+));
+assertEqual('bcc-blast', TgInviteGuard::skipReason('erve@shipping-docs.example', $malwareBcc, $own),
+    'To: undisclosed-recipients');
+$otherRecipient = headers(array(
+    'Return-Path: <ops@logistics.example>',
+    'From: <ops@logistics.example>',
+    'To: <purchasing@another-company.example>',
+));
+assertEqual(null, TgInviteGuard::skipReason('ops@logistics.example', $otherRecipient, $own),
+    'To another address (old brand domain / alias forwarding into the desk) stays');
+assertEqual('bcc-blast', TgInviteGuard::skipReason('ops@logistics.example', headers(array(
+    'Return-Path: <ops@logistics.example>', 'From: <ops@logistics.example>', 'To: Recipients:;',
+)), $own), 'empty group in To');
+assertEqual(null, TgInviteGuard::skipReason('ops@logistics.example', headers(array(
+    'Return-Path: <ops@logistics.example>', 'From: <ops@logistics.example>',
+)), $own), 'no To/Cc header at all fails open');
+$ccUs = headers(array(
+    'Return-Path: <cliente@empresa.example>',
+    'From: <cliente@empresa.example>',
+    'To: <colega@empresa.example>',
+    'Cc: Soporte <soporte@example.mx>',
+));
+assertEqual(null, TgInviteGuard::skipReason('cliente@empresa.example', $ccUs, $own), 'customer with us in Cc');
+$toSub = headers(array('Return-Path: <cliente@gmail.com>', 'From: <cliente@gmail.com>', 'To: ventas@mail.example.mx'));
+assertEqual(null, TgInviteGuard::skipReason('cliente@gmail.com', $toSub, $own), 'addressed to a subdomain of ours');
+
+// Cold mail: envelope from a bulk MTA mailbox, human From / Reply-To.
+$bulkEnvelope = headers(array(
+    'Return-Path: <mta132@sub017.contabilidad.example>',
+    'From: Facturas <facturas@contabilidad.example>',
+    'To: sales@example.mx',
+));
+assertEqual('automated-envelope', TgInviteGuard::skipReason('facturas@contabilidad.example', $bulkEnvelope, $own),
+    'envelope mtaNNN@');
+$bounceEnvelope = headers(array(
+    'Return-Path: <bounces@xsmtp.agencia.example>',
+    'From: Gerencia <gerencia@agencia.example>',
+    'To: sales@example.mx',
+));
+assertEqual('automated-envelope', TgInviteGuard::skipReason('gerencia@agencia.example', $bounceEnvelope, $own),
+    'envelope bounces@ with a human Reply-To');
+$humanEnvelope = headers(array('Return-Path: <maria.mta@empresa.example>', 'From: <maria.mta@empresa.example>', 'To: sales@example.mx'));
+assertEqual(null, TgInviteGuard::skipReason('maria.mta@empresa.example', $humanEnvelope, $own), 'human envelope stays');
+
+// Unscanned (too big for SpamAssassin) with an archive attached.
+$unscanned = headers(array('Return-Path: <info@proveedor.example>', 'From: <info@proveedor.example>', 'To: sales@example.mx'));
+assertEqual('unscanned-archive', TgInviteGuard::skipReason('info@proveedor.example', $unscanned,
+    $own + array('attachments' => array('image001.jpg', 'SOA #2026.RAR'))), 'unscanned message with a .rar');
+assertEqual('unscanned-archive', TgInviteGuard::skipReason('info@proveedor.example', $unscanned,
+    $own + array('attachments' => array('Shipping Documents.img'))), 'unscanned message with a disk image');
+assertEqual(null, TgInviteGuard::skipReason('info@proveedor.example', $unscanned,
+    $own + array('attachments' => array('captura.png', 'factura.pdf'))), 'unscanned message without archives');
+$scanned = headers(array('Return-Path: <info@proveedor.example>', 'From: <info@proveedor.example>', 'To: sales@example.mx',
+    'X-Spam-Status: No, score=0.3'));
+assertEqual(null, TgInviteGuard::skipReason('info@proveedor.example', $scanned,
+    $own + array('attachments' => array('respaldo.zip'))), 'scanned message may carry a .zip');
+
 echo "\n-- $assertions assertions, $failures failures --\n";
 exit($failures ? 1 : 0);

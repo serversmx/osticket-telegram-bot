@@ -428,7 +428,7 @@ class TelegramBotNotificationsPlugin extends Plugin {
             try { $name = (string) $owner->getName(); } catch (Exception $e) {}
         }
         $reason = TgInviteGuard::skipReason($email, $this->sourceEmailHeaders($ticket),
-            $this->guardContext($ticketSubject, $name));
+            $this->guardContext($ticketSubject, $name, $this->sourceAttachmentNames($ticket)));
         if ($reason === null) {
             $reason = $this->linkOfferThrottleReason($email);
         }
@@ -497,7 +497,8 @@ class TelegramBotNotificationsPlugin extends Plugin {
                 isset($vars['header']) ? (string) $vars['header'] : '',
                 $this->guardContext(
                     isset($vars['subject']) ? (string) $vars['subject'] : '',
-                    isset($vars['name']) ? (string) $vars['name'] : ''
+                    isset($vars['name']) ? (string) $vars['name'] : '',
+                    self::attachmentNames(isset($vars['attachments']) ? $vars['attachments'] : array())
                 )
             );
             if ($reason === null) { return; }
@@ -509,14 +510,50 @@ class TelegramBotNotificationsPlugin extends Plugin {
     }
 
     /** Context shared by every TgInviteGuard::skipReason() call. */
-    private function guardContext($subject, $name) {
+    private function guardContext($subject, $name, array $attachments = array()) {
         return array(
             'subject'       => $subject,
             'name'          => $name,
             'own_domains'   => $this->systemEmailDomains(),
             'skip_list'     => TgInviteGuard::parseSkipList($this->pref('link_offer_skip_domains')),
             'invite_sender' => $this->inviteSenderAddress(),
+            'attachments'   => $attachments,
         );
+    }
+
+    /** File names from $vars['attachments'] (arrays with 'name', or plain strings). */
+    private static function attachmentNames($list) {
+        $names = array();
+        foreach ((array) $list as $a) {
+            if (is_array($a) && isset($a['name'])) {
+                $names[] = (string) $a['name'];
+            } elseif (is_string($a)) {
+                $names[] = $a;
+            }
+        }
+        return $names;
+    }
+
+    /** File names attached to the entry that opened the ticket. */
+    private function sourceAttachmentNames(Ticket $ticket) {
+        if (!defined('THREAD_ENTRY_TABLE') || !defined('ATTACHMENT_TABLE') || !defined('FILE_TABLE')) {
+            return array();
+        }
+        try {
+            $thread = $ticket->getThread();
+            if (!$thread) { return array(); }
+            $res = db_query('SELECT f.name FROM ' . ATTACHMENT_TABLE . ' a'
+                . ' JOIN ' . FILE_TABLE . ' f ON f.id = a.file_id'
+                . ' WHERE a.type = \'H\' AND a.object_id = (SELECT MIN(te.id) FROM ' . THREAD_ENTRY_TABLE . ' te'
+                . ' WHERE te.thread_id = ' . (int) $thread->getId() . ')');
+            $names = array();
+            while ($res && ($row = db_fetch_array($res))) {
+                $names[] = (string) $row['name'];
+            }
+            return $names;
+        } catch (\Throwable $e) {
+            return array();
+        }
     }
 
     /**
